@@ -19,8 +19,24 @@ import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
 
-@CapacitorPlugin(name = "IntercomAudio")
+@CapacitorPlugin(
+        name = "IntercomAudio",
+        permissions = {
+                @Permission(
+                        alias = "startup",
+                        strings = {
+                                Manifest.permission.RECORD_AUDIO,
+                                Manifest.permission.ACCESS_FINE_LOCATION,
+                                Manifest.permission.ACCESS_COARSE_LOCATION,
+                                Manifest.permission.BLUETOOTH_CONNECT,
+                                Manifest.permission.POST_NOTIFICATIONS
+                        }
+                )
+        }
+)
 public class IntercomAudioPlugin extends Plugin {
     private AudioManager audioManager;
     private AudioFocusRequest audioFocusRequest;
@@ -62,29 +78,12 @@ public class IntercomAudioPlugin extends Plugin {
 
     @com.getcapacitor.PluginMethod
     public void requestAppPermissions(PluginCall call) {
-        java.util.ArrayList<String> permissions = new java.util.ArrayList<>();
-        permissions.add(Manifest.permission.RECORD_AUDIO);
-        permissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
-        permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            permissions.add(Manifest.permission.BLUETOOTH_CONNECT);
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permissions.add(Manifest.permission.POST_NOTIFICATIONS);
-        }
+        requestPermissionForAlias("startup", call, "permissionsResult");
+    }
 
-        java.util.ArrayList<String> missing = new java.util.ArrayList<>();
-        for (String permission : permissions) {
-            if (ContextCompat.checkSelfPermission(getContext(), permission)
-                    != PackageManager.PERMISSION_GRANTED) {
-                missing.add(permission);
-            }
-        }
-        if (missing.isEmpty()) {
-            call.resolve(new JSObject().put("granted", true));
-            return;
-        }
-        requestPermissions(missing.toArray(new String[0]), call, "permissions");
+    @PermissionCallback
+    public void permissionsResult(PluginCall call) {
+        call.resolve(new JSObject().put("granted", true));
     }
 
     @com.getcapacitor.PluginMethod
