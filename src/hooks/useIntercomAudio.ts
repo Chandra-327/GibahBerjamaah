@@ -324,6 +324,22 @@ export function useIntercomAudio({
     }, 1500);
   }, [showDeviceToast]);
 
+  const resumeRemoteAudio = useCallback(async () => {
+    await resumeAudioContext();
+    for (const audio of Object.values(audioElementsRef.current) as HTMLAudioElement[]) {
+      if (!audio?.srcObject) continue;
+      audio.muted = false;
+      audio.volume = receiverVolume;
+      if (audio.paused) {
+        try {
+          await audio.play();
+        } catch (err) {
+          console.warn('[Audio Recovery] Remote audio playback is waiting for user interaction:', err);
+        }
+      }
+    }
+  }, [receiverVolume, resumeAudioContext]);
+
   // Sistem Audio Recovery Terpusat (restartAudioStream - Resilient Non-Destructive Soft-Reload)
   const restartAudioStream = useCallback(async () => {
     if (isSwitchingAudioRef.current) {
@@ -465,7 +481,7 @@ export function useIntercomAudio({
         }
       }
 
-      await resumeAudioContext();
+      await resumeRemoteAudio();
       playRecoveryBeep();
       showDeviceToast('✅ Jalur mic & audio dipulihkan');
       setAudioStatus(newTrack.enabled ? 'connected' : 'muted');
@@ -485,6 +501,7 @@ export function useIntercomAudio({
     acquireUniversalStream,
     ensureAudioPipeline,
     resumeAudioContext,
+    resumeRemoteAudio,
     playRecoveryBeep,
     triggerDebouncedAudioReload,
     showDeviceToast,
@@ -505,10 +522,10 @@ export function useIntercomAudio({
         triggerDebouncedAudioReload('🎧 Headset / Bluetooth terdeteksi');
       };
 
-      navigator.mediaDevices.ondevicechange = handleDeviceChange;
+      navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange);
       return () => {
         if (navigator.mediaDevices) {
-          navigator.mediaDevices.ondevicechange = null;
+          navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
         }
       };
     }
@@ -553,7 +570,7 @@ export function useIntercomAudio({
       window.removeEventListener('touchstart', unlockAudioPlayback);
       window.removeEventListener('click', unlockAudioPlayback);
     };
-  }, [resumeAudioContext, receiverVolume]);
+  }, [resumeRemoteAudio, receiverVolume]);
 
   // Adjust all remote audio elements when receiverVolume changes
   useEffect(() => {
