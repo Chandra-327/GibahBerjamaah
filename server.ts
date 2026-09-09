@@ -2,7 +2,6 @@ import express from "express";
 import http from "http";
 import { Server as SocketIOServer } from "socket.io";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 
 interface RiderState {
   socketId: string;
@@ -239,6 +238,7 @@ async function start() {
   const PORT = 3000;
 
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
