@@ -35,6 +35,8 @@ jobs:
           fi
 
       - name: Build Web Application
+        env:
+          VITE_SOCKET_SERVER_URL: https://gibah.purbaya.my.id
         run: npm run build
 
       - name: Sync Capacitor Android
