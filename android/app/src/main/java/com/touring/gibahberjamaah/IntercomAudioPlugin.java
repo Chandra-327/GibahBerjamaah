@@ -73,6 +73,43 @@ public class IntercomAudioPlugin extends Plugin {
     }
 
     @com.getcapacitor.PluginMethod
+    public void setAudioOutput(PluginCall call) {
+        String output = call.getString("output", "headset");
+        if (audioManager == null) {
+            call.reject("AudioManager tidak tersedia");
+            return;
+        }
+
+        configureAudioMode();
+        if ("speaker".equals(output)) {
+            audioManager.setSpeakerphoneOn(true);
+        } else {
+            audioManager.setSpeakerphoneOn(false);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                android.media.AudioDeviceInfo fallback = null;
+                boolean selected = false;
+                for (android.media.AudioDeviceInfo device : audioManager.getAvailableCommunicationDevices()) {
+                    int type = device.getType();
+                    if (type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE) {
+                        fallback = device;
+                    } else if (type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET
+                            || type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+                            || type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+                        if (audioManager.setCommunicationDevice(device)) {
+                            selected = true;
+                            break;
+                        }
+                    }
+                }
+                if (!selected && fallback != null) {
+                    audioManager.setCommunicationDevice(fallback);
+                }
+            }
+        }
+        call.resolve(new JSObject().put("output", output));
+    }
+
+    @com.getcapacitor.PluginMethod
     public void getAudioState(PluginCall call) {
         JSObject result = new JSObject();
         result.put("mode", audioManager == null ? AudioManager.MODE_NORMAL : audioManager.getMode());

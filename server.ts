@@ -216,27 +216,27 @@ io.on("connection", (socket) => {
       isPlaying: !!data.isPlaying,
       trackTitle: data.trackTitle || "Musik Touring",
     });
+  });
 
-    socket.on("dj-captain-acquire", () => {
-      const rider = riders[socket.id];
-      if (!rider) return;
-      if (djCaptains[rider.roomId] && djCaptains[rider.roomId] !== socket.id) {
-        socket.emit("dj-captain-rejected");
-        return;
-      }
-      djCaptains[rider.roomId] = socket.id;
-      io.to(rider.roomId).emit("dj-captain-state", {
-        userId: socket.id,
-        djName: rider.username,
-      });
+  socket.on("dj-captain-acquire", () => {
+    const rider = riders[socket.id];
+    if (!rider) return;
+    if (djCaptains[rider.roomId] && djCaptains[rider.roomId] !== socket.id) {
+      socket.emit("dj-captain-rejected");
+      return;
+    }
+    djCaptains[rider.roomId] = socket.id;
+    io.to(rider.roomId).emit("dj-captain-state", {
+      userId: socket.id,
+      djName: rider.username,
     });
+  });
 
-    socket.on("dj-captain-release", () => {
-      const rider = riders[socket.id];
-      if (!rider || djCaptains[rider.roomId] !== socket.id) return;
-      delete djCaptains[rider.roomId];
-      io.to(rider.roomId).emit("dj-captain-state", null);
-    });
+  socket.on("dj-captain-release", () => {
+    const rider = riders[socket.id];
+    if (!rider || djCaptains[rider.roomId] !== socket.id) return;
+    delete djCaptains[rider.roomId];
+    io.to(rider.roomId).emit("dj-captain-state", null);
   });
 
   // 7. Disconnect handler

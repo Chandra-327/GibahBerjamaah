@@ -1,7 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Socket } from 'socket.io-client';
 import { IntercomMode, AudioConnectionStatus, MusicTrack, AudioOutputMode } from '../types';
 import { playIntercomChirp } from '../utils/audioKeepAlive';
+
+const IntercomAudio = registerPlugin<{
+  setAudioOutput: (options: { output: AudioOutputMode }) => Promise<void>;
+}>('IntercomAudio');
 
 interface UseIntercomAudioOptions {
   socket: Socket | null;
@@ -584,6 +589,9 @@ export function useIntercomAudio({
     async (mode: AudioOutputMode) => {
       setAudioOutputMode(mode);
       try {
+        if (Capacitor.isNativePlatform()) {
+          await IntercomAudio.setAudioOutput({ output: mode });
+        }
         let targetSinkId = '';
 
         if (mode === 'speaker') {
@@ -762,6 +770,7 @@ export function useIntercomAudio({
       setErrorMessage(
         err instanceof Error ? err.message : 'Gagal mengakses mikrofon. Periksa izin browser.'
       );
+      throw err;
     }
   }, [setupLocalAudioStream, socket, resumeAudioContext]);
 

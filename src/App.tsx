@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { registerPlugin } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Rider, IntercomMode, ConvoyAlert, DJMusicState, DJCaptainState } from './types';
 import { useBattery } from './hooks/useBattery';
 import { useWakeLock } from './hooks/useWakeLock';
@@ -22,6 +22,7 @@ const socketServerUrl = import.meta.env.VITE_SOCKET_SERVER_URL?.trim();
 const IntercomAudio = registerPlugin<{
   startAudioSession: () => Promise<void>;
   stopAudioSession: () => Promise<void>;
+  setAudioOutput: (options: { output: 'speaker' | 'headset' }) => Promise<void>;
 }>('IntercomAudio');
 
 export default function App() {
@@ -136,11 +137,19 @@ export default function App() {
     // 2. Request initial wake lock
     await requestLock();
 
-    // 3. Request microphone FIRST so audio track is ready before signaling begins
-    await initMicrophone();
-    await IntercomAudio.startAudioSession().catch((error) => {
-      console.warn('[Native Audio] Session unavailable:', error);
-    });
+    // Start native routing before getUserMedia so Bluetooth SCO/wired input is selected first.
+    try {
+      if (Capacitor.isNativePlatform()) {
+        await IntercomAudio.startAudioSession();
+        await IntercomAudio.setAudioOutput({ output: 'headset' });
+      }
+      await initMicrophone();
+    } catch (error) {
+      console.error('[Audio] Tidak dapat memulai sesi interkom:', error);
+      stopBackgroundAudioKeepAlive();
+      alert('Audio gagal dimulai. Izinkan mikrofon lalu coba lagi.');
+      return;
+    }
 
     // 4. Connect Socket.io
     const socket = io(socketServerUrl || undefined, {
