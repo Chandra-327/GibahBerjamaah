@@ -5,10 +5,13 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.os.Build;
+import android.os.PowerManager;
+import android.provider.Settings;
 
 import androidx.core.content.ContextCompat;
 
@@ -43,6 +46,47 @@ public class IntercomAudioPlugin extends Plugin {
                 != PackageManager.PERMISSION_GRANTED) {
             call.reject("Izin mikrofon diperlukan");
             return;
+        }
+
+        @com.getcapacitor.PluginMethod
+        public void requestAppPermissions(PluginCall call) {
+            java.util.ArrayList<String> permissions = new java.util.ArrayList<>();
+            permissions.add(Manifest.permission.RECORD_AUDIO);
+            permissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
+            permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                permissions.add(Manifest.permission.BLUETOOTH_CONNECT);
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                permissions.add(Manifest.permission.POST_NOTIFICATIONS);
+            }
+
+            java.util.ArrayList<String> missing = new java.util.ArrayList<>();
+            for (String permission : permissions) {
+                if (ContextCompat.checkSelfPermission(getContext(), permission)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    missing.add(permission);
+                }
+            }
+            if (missing.isEmpty()) {
+                call.resolve(new JSObject().put("granted", true));
+                return;
+            }
+            requestPermissions(missing.toArray(new String[0]), call, "permissions");
+        }
+
+        @com.getcapacitor.PluginMethod
+        public void openBatteryOptimizationSettings(PluginCall call) {
+            PowerManager powerManager = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && powerManager != null
+                    && !powerManager.isIgnoringBatteryOptimizations(getContext().getPackageName())) {
+                Intent intent = new Intent(
+                        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:" + getContext().getPackageName())
+                );
+                getContext().startActivity(intent);
+            }
+            call.resolve(new JSObject().put("opened", true));
         }
 
         configureAudioMode();

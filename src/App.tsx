@@ -23,6 +23,8 @@ const IntercomAudio = registerPlugin<{
   startAudioSession: () => Promise<void>;
   stopAudioSession: () => Promise<void>;
   setAudioOutput: (options: { output: 'speaker' | 'headset' }) => Promise<void>;
+  requestAppPermissions: () => Promise<{ granted: boolean }>;
+  openBatteryOptimizationSettings: () => Promise<{ opened: boolean }>;
 }>('IntercomAudio');
 
 export default function App() {
@@ -31,6 +33,25 @@ export default function App() {
   const [roomId, setRoomId] = useState('GIBAH ON THE ROAD');
   const [mode, setMode] = useState<IntercomMode>('ALWAYS_ON');
   const [isMuted, setIsMuted] = useState(false);
+
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    let cancelled = false;
+    const requestStartupPermissions = async () => {
+      try {
+        await IntercomAudio.requestAppPermissions();
+        if (!cancelled) {
+          await IntercomAudio.openBatteryOptimizationSettings();
+        }
+      } catch (error) {
+        console.error('[Permissions] Permintaan izin awal gagal:', error);
+      }
+    };
+    void requestStartupPermissions();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // GPS & Telemetry
   const [myCoords, setMyCoords] = useState<[number, number] | null>(null);
