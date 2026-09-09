@@ -31,7 +31,8 @@ public class IntercomAudioService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        return START_STICKY;
+        // The service belongs to an active room session; do not restart it after the app exits.
+        return START_NOT_STICKY;
     }
 
     @Override
