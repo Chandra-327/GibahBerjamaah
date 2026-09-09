@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
+import { registerPlugin } from '@capacitor/core';
 import { Rider, IntercomMode, ConvoyAlert, DJMusicState, DJCaptainState } from './types';
 import { useBattery } from './hooks/useBattery';
 import { useWakeLock } from './hooks/useWakeLock';
@@ -18,6 +19,10 @@ import { PWAInstallButton } from './components/PWAInstallButton';
 import { Radio, Wifi, WifiOff, Users, Battery, LogOut, Info, Music, Disc3 } from 'lucide-react';
 
 const socketServerUrl = import.meta.env.VITE_SOCKET_SERVER_URL?.trim();
+const IntercomAudio = registerPlugin<{
+  startAudioSession: () => Promise<void>;
+  stopAudioSession: () => Promise<void>;
+}>('IntercomAudio');
 
 export default function App() {
   const [isJoined, setIsJoined] = useState(false);
@@ -133,6 +138,9 @@ export default function App() {
 
     // 3. Request microphone FIRST so audio track is ready before signaling begins
     await initMicrophone();
+    await IntercomAudio.startAudioSession().catch((error) => {
+      console.warn('[Native Audio] Session unavailable:', error);
+    });
 
     // 4. Connect Socket.io
     const socket = io(socketServerUrl || undefined, {
@@ -346,6 +354,9 @@ export default function App() {
         socketRef.current.disconnect();
         socketRef.current = null;
       }
+      IntercomAudio.stopAudioSession().catch((error) => {
+        console.warn('[Native Audio] Stop session failed:', error);
+      });
       setIsJoined(false);
       setRiders([]);
       setMyCoords(null);
