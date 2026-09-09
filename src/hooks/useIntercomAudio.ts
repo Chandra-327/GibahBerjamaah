@@ -466,7 +466,7 @@ export function useIntercomAudio({
         if (audio) {
           audio.muted = false;
           audio.volume = receiverVolume;
-          if ('setSinkId' in HTMLMediaElement.prototype && typeof (audio as any).setSinkId === 'function') {
+          if (activeSinkIdRef.current && 'setSinkId' in HTMLMediaElement.prototype && typeof (audio as any).setSinkId === 'function') {
             try {
               await (audio as any).setSinkId(activeSinkIdRef.current || '');
             } catch (e) {
@@ -601,9 +601,6 @@ export function useIntercomAudio({
               targetSinkId = speakerDev.deviceId;
             }
           }
-        } else {
-          // Mode Headset: kosongkan sinkId ('') agar OS Android/Xiaomi meroute langsung ke Bluetooth headset/earpiece
-          targetSinkId = '';
         }
 
         activeSinkIdRef.current = targetSinkId;
@@ -611,7 +608,7 @@ export function useIntercomAudio({
         // Terapkan sinkId ke seluruh remote audio elements jika didukung
         if ('setSinkId' in HTMLMediaElement.prototype) {
           for (const audio of Object.values(audioElementsRef.current) as HTMLAudioElement[]) {
-            if (audio && typeof (audio as any).setSinkId === 'function') {
+            if (audio && targetSinkId && typeof (audio as any).setSinkId === 'function') {
               try {
                 await (audio as any).setSinkId(targetSinkId);
               } catch (e) {
@@ -851,7 +848,7 @@ export function useIntercomAudio({
         audio.volume = receiverVolume;
 
         // Pasang sinkId jika didukung dan valid
-        if ('setSinkId' in HTMLMediaElement.prototype && typeof (audio as any).setSinkId === 'function') {
+        if (activeSinkIdRef.current && 'setSinkId' in HTMLMediaElement.prototype && typeof (audio as any).setSinkId === 'function') {
           (audio as any).setSinkId(activeSinkIdRef.current || '').catch((err: unknown) => {
             console.warn('[Audio Output] setSinkId non-fatal error:', err);
           });
