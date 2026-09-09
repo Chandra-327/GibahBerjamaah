@@ -17,6 +17,8 @@ import { DJMusicModal } from './components/DJMusicModal';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { Radio, Wifi, WifiOff, Users, Battery, LogOut, Info, Music, Disc3 } from 'lucide-react';
 
+const socketServerUrl = import.meta.env.VITE_SOCKET_SERVER_URL?.trim();
+
 export default function App() {
   const [isJoined, setIsJoined] = useState(false);
   const [callsign, setCallsign] = useState('');
@@ -132,7 +134,7 @@ export default function App() {
     await initMicrophone();
 
     // 4. Connect Socket.io
-    const socket = io({
+    const socket = io(socketServerUrl || undefined, {
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: Infinity,
