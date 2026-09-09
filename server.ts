@@ -33,6 +33,7 @@ app.use(express.json());
 
 // In-memory store for active riders (ideal for lightweight STB Armbian)
 const riders: Record<string, RiderState> = {};
+const djCaptains: Record<string, string> = {};
 
 // REST endpoints for monitoring & status
 app.get("/api/health", (_req, res) => {
@@ -113,6 +114,11 @@ io.on("connection", (socket) => {
       roomId,
       users: existingInRoom,
     });
+    const captainId = djCaptains[roomId];
+    socket.emit("dj-captain-state", captainId ? {
+      userId: captainId,
+      djName: riders[captainId]?.username || "Rider",
+    } : null);
 
     // Notify others in room about new rider
     socket.to(roomId).emit("user-connected", {
@@ -202,12 +208,34 @@ io.on("connection", (socket) => {
   socket.on("dj-music-state", (data: { isPlaying: boolean; trackTitle?: string }) => {
     const rider = riders[socket.id];
     if (!rider) return;
+    if (djCaptains[rider.roomId] !== socket.id) return;
 
     socket.to(rider.roomId).emit("dj-music-state", {
       userId: socket.id,
       djName: rider.username,
       isPlaying: !!data.isPlaying,
       trackTitle: data.trackTitle || "Musik Touring",
+    });
+
+    socket.on("dj-captain-acquire", () => {
+      const rider = riders[socket.id];
+      if (!rider) return;
+      if (djCaptains[rider.roomId] && djCaptains[rider.roomId] !== socket.id) {
+        socket.emit("dj-captain-rejected");
+        return;
+      }
+      djCaptains[rider.roomId] = socket.id;
+      io.to(rider.roomId).emit("dj-captain-state", {
+        userId: socket.id,
+        djName: rider.username,
+      });
+    });
+
+    socket.on("dj-captain-release", () => {
+      const rider = riders[socket.id];
+      if (!rider || djCaptains[rider.roomId] !== socket.id) return;
+      delete djCaptains[rider.roomId];
+      io.to(rider.roomId).emit("dj-captain-state", null);
     });
   });
 
@@ -218,6 +246,10 @@ io.on("connection", (socket) => {
       const { roomId, username } = rider;
       console.log(`[LEAVE] ${username} (${socket.id}) disconnected from ${roomId}`);
       socket.to(roomId).emit("user-disconnected", socket.id);
+      if (djCaptains[roomId] === socket.id) {
+        delete djCaptains[roomId];
+        socket.to(roomId).emit("dj-captain-state", null);
+      }
       delete riders[socket.id];
     }
   });

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { Rider, IntercomMode, ConvoyAlert, DJMusicState } from './types';
+import { Rider, IntercomMode, ConvoyAlert, DJMusicState, DJCaptainState } from './types';
 import { useBattery } from './hooks/useBattery';
 import { useWakeLock } from './hooks/useWakeLock';
 import { useMediaSession } from './hooks/useMediaSession';
@@ -52,6 +52,7 @@ export default function App() {
   const [isBatteryGuideOpen, setIsBatteryGuideOpen] = useState(false);
   const [isDJModalOpen, setIsDJModalOpen] = useState(false);
   const [activeDjState, setActiveDjState] = useState<DJMusicState | null>(null);
+  const [djCaptain, setDjCaptain] = useState<DJCaptainState | null>(null);
 
   // Networking state
   const [isConnected, setIsConnected] = useState(false);
@@ -244,11 +245,16 @@ export default function App() {
       console.log('[DJ Music State]:', data);
       setActiveDjState(data.isPlaying ? data : null);
     });
+    socket.on('dj-captain-state', (data: DJCaptainState | null) => setDjCaptain(data));
+    socket.on('dj-captain-rejected', () => {
+      console.warn('[DJ] Kapten musik sedang digunakan rider lain');
+    });
 
     // User Disconnected
     socket.on('user-disconnected', (userId: string) => {
       setRiders((prev) => prev.filter((r) => r.userId !== userId));
       setActiveDjState((prev) => (prev?.userId === userId ? null : prev));
+      setDjCaptain((prev) => (prev?.userId === userId ? null : prev));
     });
 
     // 5. Start GPS tracking
@@ -513,6 +519,14 @@ export default function App() {
         onPrevTrack={playPrevTrack}
         onTogglePlay={togglePlayMusic}
         onStop={stopMusic}
+        djCaptain={djCaptain}
+        isCurrentRiderCaptain={djCaptain?.userId === socketRef.current?.id}
+        onAcquireCaptain={() => socketRef.current?.emit('dj-captain-acquire')}
+        onReleaseCaptain={() => {
+          stopMusic();
+          setIsDjMode(false);
+          socketRef.current?.emit('dj-captain-release');
+        }}
       />
 
       {/* Modals */}

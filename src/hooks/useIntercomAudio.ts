@@ -27,7 +27,7 @@ export function useIntercomAudio({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Audio Output Routing (Speakerphone vs Headset)
-  const [audioOutputMode, setAudioOutputMode] = useState<AudioOutputMode>('speaker');
+  const [audioOutputMode, setAudioOutputMode] = useState<AudioOutputMode>('headset');
   const activeSinkIdRef = useRef<string>('');
 
   // Audio Device Change & Disconnect Toast with Auto-Dismiss

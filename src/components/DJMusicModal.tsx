@@ -18,7 +18,7 @@ import {
   Clock,
   VolumeX,
 } from 'lucide-react';
-import { MusicTrack } from '../types';
+import { MusicTrack, DJCaptainState } from '../types';
 
 interface DJMusicModalProps {
   isOpen: boolean;
@@ -43,6 +43,10 @@ interface DJMusicModalProps {
   onPrevTrack: () => void;
   onTogglePlay: () => void;
   onStop: () => void;
+  djCaptain: DJCaptainState | null;
+  isCurrentRiderCaptain: boolean;
+  onAcquireCaptain: () => void;
+  onReleaseCaptain: () => void;
 }
 
 export const DJMusicModal: React.FC<DJMusicModalProps> = ({
@@ -68,6 +72,10 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
   onPrevTrack,
   onTogglePlay,
   onStop,
+  djCaptain,
+  isCurrentRiderCaptain,
+  onAcquireCaptain,
+  onReleaseCaptain,
 }) => {
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const filesInputRef = useRef<HTMLInputElement | null>(null);
@@ -125,20 +133,25 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
             <div>
               <div className="text-xs font-bold text-white uppercase">Status DJ Kapten</div>
               <div className="text-[11px] text-zinc-400">
-                {isDjMode ? 'Aktif mixing audio ke stream WebRTC' : 'Non-aktif (hanya suara mic)'}
+                {isCurrentRiderCaptain
+                  ? 'Anda memegang kendali musik'
+                  : djCaptain
+                    ? `Dipakai ${djCaptain.djName}`
+                    : 'Belum ada kapten musik'}
               </div>
             </div>
           </div>
 
           <button
-            onClick={() => onToggleDjMode(!isDjMode)}
+            onClick={isCurrentRiderCaptain ? onReleaseCaptain : onAcquireCaptain}
+            disabled={!!djCaptain && !isCurrentRiderCaptain}
             className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all ${
-              isDjMode
+              isCurrentRiderCaptain
                 ? 'bg-purple-500 text-zinc-950 shadow-lg shadow-purple-500/30'
-                : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700 disabled:opacity-50'
             }`}
           >
-            {isDjMode ? 'AKTIF' : 'AKTIFKAN'}
+            {isCurrentRiderCaptain ? 'LEPASKAN' : djCaptain ? 'TERKUNCI' : 'AMBIL KAPTEN'}
           </button>
         </div>
 
@@ -178,6 +191,7 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
           <div className="grid grid-cols-2 gap-2">
             <button
               onClick={() => folderInputRef.current?.click()}
+              disabled={!isCurrentRiderCaptain}
               className="py-3 rounded-xl bg-purple-950/50 hover:bg-purple-900/60 border border-purple-600/40 text-xs font-bold text-purple-200 flex items-center justify-center gap-2 active:scale-98 transition-all"
             >
               <FolderOpen className="w-4 h-4 text-purple-400" />
@@ -186,6 +200,7 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
 
             <button
               onClick={() => filesInputRef.current?.click()}
+              disabled={!isCurrentRiderCaptain}
               className="py-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs font-bold text-zinc-200 flex items-center justify-center gap-2 active:scale-98 transition-all"
             >
               <FilePlus className="w-4 h-4 text-emerald-400" />
@@ -264,6 +279,7 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
                   <button
                     key={`${track.name}-${idx}`}
                     onClick={() => onSelectTrack(idx)}
+                    disabled={!isCurrentRiderCaptain}
                     className={`w-full text-left px-2.5 py-1.5 rounded-lg flex items-center justify-between text-xs transition-all ${
                       isActive
                         ? 'bg-purple-950 border border-purple-500/80 text-purple-200 font-bold'
@@ -290,7 +306,7 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
         <div className="flex items-center gap-2">
           <button
             onClick={onPrevTrack}
-            disabled={playlist.length === 0}
+            disabled={!isCurrentRiderCaptain || playlist.length === 0}
             className="w-14 h-14 rounded-2xl bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-300 flex items-center justify-center active:scale-95 transition-all"
             title="Lagu Sebelumnya"
           >
@@ -299,7 +315,7 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
 
           <button
             onClick={onTogglePlay}
-            disabled={!trackTitle && playlist.length === 0}
+            disabled={!isCurrentRiderCaptain || (!trackTitle && playlist.length === 0)}
             className={`flex-1 h-14 rounded-2xl font-black text-sm uppercase tracking-wider flex items-center justify-center gap-2 transition-all shadow-xl active:scale-98 ${
               !trackTitle && playlist.length === 0
                 ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed border border-zinc-800'
@@ -323,7 +339,7 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
 
           <button
             onClick={onNextTrack}
-            disabled={playlist.length === 0}
+            disabled={!isCurrentRiderCaptain || playlist.length === 0}
             className="w-14 h-14 rounded-2xl bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-300 flex items-center justify-center active:scale-95 transition-all"
             title="Lagu Berikutnya"
           >
@@ -332,7 +348,7 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
 
           <button
             onClick={onStop}
-            disabled={!trackTitle && playlist.length === 0}
+            disabled={!isCurrentRiderCaptain || (!trackTitle && playlist.length === 0)}
             className="w-14 h-14 rounded-2xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 disabled:opacity-40 text-zinc-300 flex items-center justify-center active:scale-95 transition-all"
             title="Stop Musik"
           >

@@ -35,6 +35,11 @@ export interface DJMusicState {
   trackTitle: string;
 }
 
+export interface DJCaptainState {
+  userId: string;
+  djName: string;
+}
+
 export interface RoomMetadata {
   roomId: string;
   username: string;
@@ -49,4 +54,3 @@ export interface MusicTrack {
   name: string;
   lastModified: number;
 }
-
