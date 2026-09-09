@@ -48,47 +48,6 @@ public class IntercomAudioPlugin extends Plugin {
             return;
         }
 
-        @com.getcapacitor.PluginMethod
-        public void requestAppPermissions(PluginCall call) {
-            java.util.ArrayList<String> permissions = new java.util.ArrayList<>();
-            permissions.add(Manifest.permission.RECORD_AUDIO);
-            permissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
-            permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                permissions.add(Manifest.permission.BLUETOOTH_CONNECT);
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                permissions.add(Manifest.permission.POST_NOTIFICATIONS);
-            }
-
-            java.util.ArrayList<String> missing = new java.util.ArrayList<>();
-            for (String permission : permissions) {
-                if (ContextCompat.checkSelfPermission(getContext(), permission)
-                        != PackageManager.PERMISSION_GRANTED) {
-                    missing.add(permission);
-                }
-            }
-            if (missing.isEmpty()) {
-                call.resolve(new JSObject().put("granted", true));
-                return;
-            }
-            requestPermissions(missing.toArray(new String[0]), call, "permissions");
-        }
-
-        @com.getcapacitor.PluginMethod
-        public void openBatteryOptimizationSettings(PluginCall call) {
-            PowerManager powerManager = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && powerManager != null
-                    && !powerManager.isIgnoringBatteryOptimizations(getContext().getPackageName())) {
-                Intent intent = new Intent(
-                        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                        Uri.parse("package:" + getContext().getPackageName())
-                );
-                getContext().startActivity(intent);
-            }
-            call.resolve(new JSObject().put("opened", true));
-        }
-
         configureAudioMode();
         requestAudioFocus();
 
@@ -99,6 +58,47 @@ public class IntercomAudioPlugin extends Plugin {
             getContext().startService(serviceIntent);
         }
         call.resolve(new JSObject().put("started", true));
+    }
+
+    @com.getcapacitor.PluginMethod
+    public void requestAppPermissions(PluginCall call) {
+        java.util.ArrayList<String> permissions = new java.util.ArrayList<>();
+        permissions.add(Manifest.permission.RECORD_AUDIO);
+        permissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            permissions.add(Manifest.permission.BLUETOOTH_CONNECT);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS);
+        }
+
+        java.util.ArrayList<String> missing = new java.util.ArrayList<>();
+        for (String permission : permissions) {
+            if (ContextCompat.checkSelfPermission(getContext(), permission)
+                    != PackageManager.PERMISSION_GRANTED) {
+                missing.add(permission);
+            }
+        }
+        if (missing.isEmpty()) {
+            call.resolve(new JSObject().put("granted", true));
+            return;
+        }
+        requestPermissions(missing.toArray(new String[0]), call, "permissions");
+    }
+
+    @com.getcapacitor.PluginMethod
+    public void openBatteryOptimizationSettings(PluginCall call) {
+        PowerManager powerManager = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && powerManager != null
+                && !powerManager.isIgnoringBatteryOptimizations(getContext().getPackageName())) {
+            Intent intent = new Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:" + getContext().getPackageName())
+            );
+            getContext().startActivity(intent);
+        }
+        call.resolve(new JSObject().put("opened", true));
     }
 
     @com.getcapacitor.PluginMethod
@@ -167,7 +167,6 @@ public class IntercomAudioPlugin extends Plugin {
             return;
         }
         audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
-        audioManager.setSpeakerphoneOn(false);
     }
 
     private void requestAudioFocus() {
@@ -179,7 +178,7 @@ public class IntercomAudioPlugin extends Plugin {
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+            audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                     .setAudioAttributes(attributes)
                     .setOnAudioFocusChangeListener(focusListener)
                     .setAcceptsDelayedFocusGain(false)
@@ -189,7 +188,7 @@ public class IntercomAudioPlugin extends Plugin {
             audioManager.requestAudioFocus(
                     focusListener,
                     AudioManager.STREAM_VOICE_CALL,
-                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE
+                    AudioManager.AUDIOFOCUS_GAIN
             );
         }
     }

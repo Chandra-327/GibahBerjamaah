@@ -159,7 +159,6 @@ export default function App() {
     try {
       if (Capacitor.isNativePlatform()) {
         await IntercomAudio.startAudioSession();
-        await IntercomAudio.setAudioOutput({ output: 'headset' });
       }
       await initMicrophone();
     } catch (error) {

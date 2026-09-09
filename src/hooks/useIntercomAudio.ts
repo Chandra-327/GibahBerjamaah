@@ -662,6 +662,13 @@ export function useIntercomAudio({
     return localStreamRef.current?.getAudioTracks()[0] || localStream?.getAudioTracks()[0] || null;
   }, [isDjMode, localStream]);
 
+  const getActiveOutgoingStream = useCallback(() => {
+    if (isDjMode && mixedDestinationRef.current) {
+      return mixedDestinationRef.current.stream;
+    }
+    return localStreamRef.current || localStream;
+  }, [isDjMode, localStream]);
+
   // Replace or add track on all active peer connections when outgoing track changes
   const syncTrackToPeers = useCallback(() => {
     const newTrack = getActiveOutgoingTrack();
@@ -674,15 +681,18 @@ export function useIntercomAudio({
         audioSender.replaceTrack(newTrack).catch((err) => {
           console.warn('[WebRTC] replaceTrack warning:', err);
         });
-      } else if (localStreamRef.current) {
+      } else {
         try {
-          pc.addTrack(newTrack, localStreamRef.current);
+          const outgoingStream = getActiveOutgoingStream();
+          if (outgoingStream) {
+            pc.addTrack(newTrack, outgoingStream);
+          }
         } catch (e) {
           console.warn('[WebRTC] addTrack warning:', e);
         }
       }
     });
-  }, [getActiveOutgoingTrack]);
+  }, [getActiveOutgoingStream, getActiveOutgoingTrack]);
 
   // Trigger sync when DJ mode or localStream changes
   useEffect(() => {
@@ -789,7 +799,7 @@ export function useIntercomAudio({
 
       // Add local audio track
       const activeTrack = getActiveOutgoingTrack();
-      const currentStream = localStreamRef.current;
+      const currentStream = getActiveOutgoingStream();
       if (activeTrack && currentStream) {
         try {
           pc.addTrack(activeTrack, currentStream);
@@ -873,7 +883,7 @@ export function useIntercomAudio({
 
       return pc;
     },
-    [getActiveOutgoingTrack, socket, receiverVolume]
+    [getActiveOutgoingStream, getActiveOutgoingTrack, socket, receiverVolume]
   );
 
   // 4. Handle Socket.io WebRTC Signals (Reliable Conference Call Mesh)
