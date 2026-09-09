@@ -1,0 +1,16 @@
+{
+  "name": "gibah-berjamaah-stb",
+  "version": "1.0.0",
+  "description": "Interkom Suara WebRTC & Peta GPS Real-Time khusus touring motor (STB Armbian Linux)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

@@ -1,0 +1,12 @@
+{
+	"appId": "com.touring.gibahberjamaah",
+	"appName": "Gibah Berjamaah",
+	"webDir": "dist",
+	"server": {
+		"androidScheme": "https",
+		"cleartext": true
+	},
+	"android": {
+		"allowMixedContent": true
+	}
+}

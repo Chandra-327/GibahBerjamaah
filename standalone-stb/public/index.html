@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>GIBAH BERJAMAAH - Interkom Suara & Peta GPS STB</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#000000">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body, html { margin: 0; padding: 0; background: #000; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; overflow: hidden; height: 100%; width: 100%; user-select: none; }
+    
+    /* Login / Lobby Screen */
+    #login-screen { position: fixed; inset: 0; background: #09090b; z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; text-align: center; }
+    .logo-badge { width: 72px; height: 72px; border-radius: 20px; background: #18181b; border: 2px solid #22c55e; display: flex; align-items: center; justify-content: center; margin-bottom: 12px; font-size: 32px; box-shadow: 0 0 24px rgba(34, 197, 94, 0.25); }
+    .input-group { margin-bottom: 14px; width: 100%; max-width: 320px; text-align: left; }
+    label { font-size: 11px; font-weight: bold; text-transform: uppercase; color: #a1a1aa; margin-bottom: 5px; display: block; }
+    input { width: 100%; padding: 16px; border-radius: 14px; border: 2px solid #27272a; background: #18181b; color: #fff; font-size: 1.1rem; text-align: center; font-weight: bold; }
+    input:focus { border-color: #22c55e; outline: none; }
+    .btn-start { width: 100%; max-width: 320px; background: #22c55e; color: #000; border: none; padding: 18px 24px; border-radius: 18px; font-weight: 900; font-size: 1.25rem; cursor: pointer; box-shadow: 0 0 24px rgba(34, 197, 94, 0.4); text-transform: uppercase; margin-top: 10px; transition: transform 0.1s; }
+    .btn-start:active { transform: scale(0.97); }
+
+    /* Main App Interface */
+    #main-app { display: none; height: 100vh; flex-direction: column; position: relative; }
+    #header { height: 50px; background: rgba(9, 9, 11, 0.95); border-bottom: 1px solid #27272a; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; z-index: 500; }
+    #map { flex-grow: 1; width: 100%; z-index: 1; }
+
+    /* Glove-Friendly Rider Bottom Controls */
+    #controls { background: rgba(9, 9, 11, 0.96); padding: 10px 12px; border-top: 1px solid #27272a; z-index: 500; display: flex; flex-direction: column; gap: 8px; }
+    .top-controls-row { display: flex; gap: 6px; }
+    .main-controls-row { display: flex; gap: 10px; }
+    
+    .btn-sm { flex: 1; padding: 10px 6px; border-radius: 12px; border: 1px solid #3f3f46; font-weight: bold; font-size: 0.75rem; text-transform: uppercase; cursor: pointer; background: #18181b; color: #e4e4e7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .btn-ptt { flex: 1; height: 76px; border-radius: 18px; border: 2px solid #3f3f46; font-weight: 900; font-size: 1.15rem; text-transform: uppercase; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #18181b; color: #fff; transition: all 0.1s; }
+    .btn-ptt.transmitting { background: #22c55e !important; color: #000 !important; border-color: #fff !important; box-shadow: 0 0 30px rgba(34, 197, 94, 0.8); }
+    .btn-mute { width: 80px; height: 76px; border-radius: 18px; border: 2px solid #22c55e; background: #18181b; color: #22c55e; font-weight: 900; font-size: 0.85rem; text-transform: uppercase; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; flex-shrink: 0; }
+    .btn-mute.muted { border-color: #ef4444 !important; color: #ef4444 !important; background: #450a0a !important; }
+
+    .btn-reset { width: 72px; height: 76px; border-radius: 18px; border: 2px solid #3b82f6; background: #0f172a; color: #60a5fa; font-weight: 900; text-transform: uppercase; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; flex-shrink: 0; transition: all 0.1s; }
+    .btn-reset:active { transform: scale(0.95); background: #1e3a8a; border-color: #93c5fd; }
+    
+    .bg-green { background: #052e16 !important; border-color: #22c55e !important; color: #4ade80 !important; }
+    .bg-red { background: #450a0a !important; border-color: #ef4444 !important; color: #f87171 !important; }
+    .bg-purple { background: #2e1065 !important; border-color: #a855f7 !important; color: #d8b4fe !important; }
+
+    /* Speaking Neon Wave Pulse */
+    .rider-label { background: rgba(0,0,0,0.85); color: #22c55e; padding: 3px 8px; border-radius: 6px; font-weight: bold; font-size: 11px; border: 1px solid #22c55e; white-space: nowrap; }
+    .speaking-ring { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.9); animation: pulse 1s infinite; }
+    @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.9); } 70% { box-shadow: 0 0 0 16px rgba(34, 197, 94, 0); } 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); } }
+
+    /* Modal */
+    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 2000; align-items: center; justify-content: center; padding: 16px; }
+    .modal-content { background: #18181b; border: 1px solid #3f3f46; border-radius: 20px; padding: 20px; max-width: 380px; width: 100%; max-height: 90vh; overflow-y: auto; }
+
+    /* Convoy Alert Banner (20s Auto-Dismiss with fade out) */
+    #alert-banner {
+      display: none;
+      position: absolute;
+      top: 60px;
+      left: 12px;
+      right: 12px;
+      z-index: 1500;
+      background: rgba(69, 10, 10, 0.95);
+      border: 2px solid #ef4444;
+      box-shadow: 0 10px 30px rgba(239, 68, 68, 0.4);
+      border-radius: 16px;
+      padding: 14px;
+      color: #fff;
+      transition: opacity 0.4s ease, transform 0.4s ease;
+      opacity: 0;
+      transform: translateY(-10px);
+    }
+    #alert-banner.show {
+      display: block;
+      opacity: 1;
+      transform: translateY(0);
+    }
+    .alert-countdown-bar {
+      width: 100%;
+      height: 4px;
+      background: rgba(0,0,0,0.5);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-top: 10px;
+    }
+    .alert-countdown-fill {
+      height: 100%;
+      background: #ef4444;
+      width: 100%;
+      transition: width 20s linear;
+    }
+  </style>
+</head>
+<body>
+
+<!-- 1. Halaman Login / Join Room Sederhana -->
+<div id="login-screen">
+  <div class="logo-badge">🏍️</div>
+  <h1 style="color: #22c55e; margin: 0 0 4px 0; font-size: 1.7rem; font-weight: 900; letter-spacing: 1px;">GIBAH BERJAMAAH</h1>
+  <p style="margin: 0 0 24px 0; color: #a1a1aa; font-size: 0.8rem;">Interkom Suara WebRTC & Peta GPS STB Armbian</p>
+  
+  <div class="input-group">
+    <label>Nama Rider / Callsign</label>
+    <input type="text" id="username" placeholder="Contoh: Bule / Captain" maxlength="15" autofocus>
+  </div>
+  
+  <div class="input-group">
+    <label>Room ID Touring</label>
+    <input type="text" id="room" value="GIBAH ON THE ROAD" placeholder="GIBAH ON THE ROAD">
+  </div>
+
+  <button class="btn-start" onclick="startApp()">MULAI GIBAH</button>
+  <p style="font-size: 11px; color: #71717a; margin-top: 16px;">
+    Browser akan meminta izin Mikrofon & GPS.<br>Pilih <strong>"Izinkan"</strong> agar interkom aktif.
+  </p>
+</div>
+
+<!-- 2. Main App Viewport -->
+<div id="main-app">
+  <div id="header">
+    <div style="font-weight: 900; font-size: 0.85rem; color: #22c55e; display: flex; align-items: center; gap: 6px; overflow: hidden;">
+      <span style="white-space: nowrap;">GIBAH BERJAMAAH</span>
+      <span id="room-badge" style="font-size: 9px; background: #27272a; color: #e4e4e7; padding: 2px 6px; border-radius: 4px; font-family: monospace;">-</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 6px; font-size: 11px;">
+      <span id="dj-status-pill" style="display: none; color: #a855f7; font-weight: bold; font-size: 10px;">🎵 DJ</span>
+      <span id="speed-meter" style="color: #4ade80; font-family: monospace; font-weight: bold;">0 km/h</span>
+      <span style="color: #71717a;">•</span>
+      <span id="battery-disp" style="font-family: monospace;">🔋 100%</span>
+    </div>
+  </div>
+
+  <div id="map"></div>
+
+  <!-- In-App Convoy Alert Banner (20s Auto-Dismiss with fade out) -->
+  <div id="alert-banner">
+    <div style="display: flex; align-items: center; justify-content: space-between;">
+      <div style="font-size: 11px; font-weight: bold; color: #fca5a5; text-transform: uppercase;">
+        🚨 ALERT DARI: <span id="alert-sender" style="color: #fff; font-family: monospace;">-</span>
+      </div>
+      <button onclick="dismissAlertBanner()" style="background: none; border: none; color: #fca5a5; font-size: 16px; cursor: pointer;">✕</button>
+    </div>
+    <div id="alert-text" style="font-size: 13px; font-weight: 900; color: #fff; margin-top: 4px;">
+      Jalan Rusak / Bahaya di depan!
+    </div>
+    <div class="alert-countdown-bar">
+      <div id="alert-progress" class="alert-countdown-fill"></div>
+    </div>
+  </div>
+
+  <!-- Audio Device Toast (Headset Bluetooth Disconnected) -->
+  <div id="device-toast" style="display:none; position:fixed; top:12px; left:12px; right:12px; z-index:2500; background:#18181b; border:2px solid #eab308; color:#fef08a; padding:12px 14px; border-radius:14px; font-size:12px; font-weight:bold; box-shadow:0 10px 30px rgba(0,0,0,0.8); align-items:center; justify-content:space-between;">
+    <span id="device-toast-text">⚠️ Perangkat audio terputus! Suara kembali ke speaker/mic bawaan HP.</span>
+    <button onclick="dismissDeviceToast()" style="background:none; border:none; color:#fef08a; font-size:18px; cursor:pointer; font-weight:bold; margin-left:8px;">✕</button>
+  </div>
+
+  <!-- Glove-Friendly Controls -->
+  <div id="controls">
+    <div class="top-controls-row">
+      <button id="mode-btn" class="btn-sm" onclick="toggleMode()">Mode: Always-ON</button>
+      <button id="dj-btn" class="btn-sm" onclick="openDJModal()">DJ Musik 🎵</button>
+      <button id="lock-btn" class="btn-sm" onclick="toggleWakeLock()">WakeLock: OFF</button>
+      <button class="btn-sm bg-red" onclick="openAlertModal()">ALERT ⚠️</button>
+      <button class="btn-sm" onclick="openBatteryGuide()">Baterai ℹ️</button>
+    </div>
+    
+    <div class="main-controls-row">
+      <button id="mute-btn" class="btn-mute" onclick="toggleMute()" title="Mute / Unmute Mikrofon">
+        <span id="mute-icon">🎤</span>
+        <span id="mute-text">MIC ON</span>
+      </button>
+
+      <button id="reset-audio-btn" class="btn-reset" onclick="handleManualAudioReset()" title="Reset Mic / Pulihkan Jalur Audio">
+        <span style="font-size: 20px;">🔄</span>
+        <span style="font-size: 9px; font-weight: 900; margin-top: 3px; line-height: 1.1;">RESET<br>AUDIO</span>
+      </button>
+
+      <button id="ptt-btn" class="btn-ptt" onmousedown="pttPress()" onmouseup="pttRelease()" ontouchstart="pttTouchStart(event)" ontouchend="pttTouchEnd(event)">
+        <span id="ptt-main-text">ALWAYS-ON</span>
+        <span id="ptt-sub-text" style="font-size: 10px; color: #a1a1aa; font-weight: normal; margin-top: 4px;">Standby Suara Terbuka</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Convoy Alert Selection -->
+<div id="alert-modal" class="modal-overlay">
+  <div class="modal-content">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h3 style="margin:0; color:#ef4444; font-size:1.1rem; font-weight:900;">🚨 PILIH ALERT TOURING</h3>
+      <button onclick="closeAlertModal()" style="background:none; border:none; color:#a1a1aa; font-size:1.2rem; cursor:pointer;">✕</button>
+    </div>
+    <p style="font-size:11px; color:#a1a1aa; margin:0 0 14px 0;">
+      Penanda akan muncul di peta semua rider selama <strong>5 Menit</strong> sebelum terhapus otomatis.
+    </p>
+
+    <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px;">
+      <button class="btn-sm bg-red" style="padding:14px; font-size:0.9rem;" onclick="sendAlertAndClose('DANGER', '⚠️ Jalan Rusak / Lubang')">
+        ⚠️ Jalan Rusak / Lubang
+      </button>
+      <button class="btn-sm" style="padding:14px; font-size:0.9rem; background:#854d0e; border-color:#eab308; color:#fef08a;" onclick="sendAlertAndClose('FUEL', '⛽ Isi Bensin / SPBU')">
+        ⛽ Isi Bensin / SPBU
+      </button>
+      <button class="btn-sm" style="padding:14px; font-size:0.9rem; background:#1e3a8a; border-color:#3b82f6; color:#bfdbfe;" onclick="sendAlertAndClose('REST', '☕ Berhenti / Rest Area')">
+        ☕ Berhenti / Rest Area
+      </button>
+      <button class="btn-sm bg-red" style="padding:14px; font-size:0.9rem; background:#7f1d1d;" onclick="sendAlertAndClose('STOP', '🛑 Berhenti Darurat / Mogok')">
+        🛑 Berhenti Darurat / Mogok
+      </button>
+    </div>
+
+    <button class="btn-sm" style="width:100%; padding:12px; background:#27272a;" onclick="closeAlertModal()">BATAL</button>
+  </div>
+</div>
+
+<!-- Modal DJ Kapten (Musik Touring MP3 & Direct Routing) -->
+<div id="dj-modal" class="modal-overlay">
+  <div class="modal-content">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h3 style="margin:0; color:#a855f7; font-size:1.1rem; font-weight:900;">🎵 DJ KAPTEN (PLAYLIST)</h3>
+      <button onclick="closeDJModal()" style="background:none; border:none; color:#a1a1aa; font-size:1.2rem; cursor:pointer;">✕</button>
+    </div>
+    <p style="font-size:11px; color:#a1a1aa; margin:0 0 14px 0;">
+      Putar playlist folder MP3 dari HP dan bagikan suara jernih P2P ke seluruh rider.
+    </p>
+
+    <!-- DJ Toggle -->
+    <div style="display:flex; justify-content:space-between; align-items:center; background:#09090b; padding:12px; border-radius:12px; margin-bottom:12px; border:1px solid #27272a;">
+      <span style="font-size:12px; font-weight:bold;">Status DJ Kapten:</span>
+      <button id="dj-toggle-btn" class="btn-sm" style="flex:none; width:90px; background:#22c55e; color:#000; font-weight:900;" onclick="toggleDJMode()">AKTIF</button>
+    </div>
+
+    <!-- Folder & Files Pickers -->
+    <div style="background:#09090b; padding:12px; border-radius:12px; margin-bottom:12px; border:1px solid #27272a;">
+      <label style="font-size:10px; color:#71717a; display:block; margin-bottom:6px;">PILIH FOLDER / BERKAS MUSIK</label>
+      
+      <!-- Hidden file inputs -->
+      <input type="file" id="musicFolderInput" webkitdirectory directory multiple accept="audio/*" style="display:none;" onchange="handleFolderSelect(event)">
+      <input type="file" id="musicFilesInput" multiple accept="audio/*" style="display:none;" onchange="handleFilesSelect(event)">
+      
+      <div style="display:flex; gap:6px; margin-bottom:10px;">
+        <button class="btn-sm" style="flex:1; padding:9px 4px; font-size:11px; background:#3b82f6; color:#fff; border-color:#2563eb;" onclick="document.getElementById('musicFolderInput').click()">
+          📁 Folder
+        </button>
+        <button class="btn-sm" style="flex:1; padding:9px 4px; font-size:11px; background:#27272a;" onclick="document.getElementById('musicFilesInput').click()">
+          📄 Pilih Lagu
+        </button>
+        <button class="btn-sm" style="flex:1; padding:9px 4px; font-size:11px; background:#4c1d95; color:#e9d5ff; border-color:#7c3aed; font-weight:bold;" onclick="loadDemoTouringTracks()">
+          🎵 Demo Lagu
+        </button>
+      </div>
+
+      <!-- Sorting Options -->
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:4px; margin-bottom:8px;">
+        <span style="font-size:10px; color:#a1a1aa; font-weight:bold;">URUTKAN:</span>
+        <div style="display:flex; gap:4px;">
+          <button id="sort-name-btn" class="btn-sm bg-green" style="font-size:10px; padding:4px 8px;" onclick="setPlaylistSort('NAME')">A - Z</button>
+          <button id="sort-shuffle-btn" class="btn-sm" style="font-size:10px; padding:4px 8px;" onclick="setPlaylistSort('SHUFFLE')">🔀 Acak</button>
+          <button id="sort-date-btn" class="btn-sm" style="font-size:10px; padding:4px 8px;" onclick="setPlaylistSort('DATE')">🕒 Waktu</button>
+        </div>
+      </div>
+
+      <!-- Playlist Box -->
+      <div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:4px;">
+        <span id="playlist-count" style="color:#a1a1aa;">Playlist: 0 Lagu</span>
+        <span id="dj-current-label" style="color:#a855f7; font-weight:bold; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">-</span>
+      </div>
+      <div id="playlist-container" style="max-height:120px; overflow-y:auto; background:#18181b; border:1px solid #3f3f46; border-radius:8px; padding:4px;">
+        <div style="padding:10px; text-align:center; color:#71717a; font-size:11px;">Belum ada lagu dimuat. Pilih folder atau file MP3 di atas.</div>
+      </div>
+    </div>
+
+    <!-- Playback Controls -->
+    <div style="display:flex; gap:6px; margin-bottom:12px;">
+      <button class="btn-sm" style="flex:1; padding:12px; background:#27272a;" onclick="playPrevTrack()">
+        ⏮ Prev
+      </button>
+      <button id="dj-play-btn" class="btn-sm" style="flex:2; padding:12px; background:#a855f7; color:#fff; font-weight:900;" onclick="toggleDJPlay()">
+        ▶ PUTAR
+      </button>
+      <button class="btn-sm" style="flex:1; padding:12px; background:#27272a;" onclick="playNextTrack()">
+        ⏭ Next
+      </button>
+      <button class="btn-sm" style="flex:1; padding:12px; background:#450a0a; border-color:#ef4444; color:#f87171;" onclick="stopDJMusic()">
+        ⏹ STOP
+      </button>
+    </div>
+
+    <!-- Volume slider (Kapten) -->
+    <div style="background:#09090b; padding:12px; border-radius:12px; margin-bottom:10px; border:1px solid #27272a;">
+      <div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:6px;">
+        <span>Volume Musik (Kapten HP):</span>
+        <span id="dj-vol-label" style="font-weight:bold; color:#a855f7;">80%</span>
+      </div>
+      <input type="range" id="dj-vol-slider" min="0" max="1" step="0.05" value="0.8" style="width:100%;" oninput="changeDJVolume(this.value)">
+    </div>
+
+    <!-- Receiver Volume Slider (For Riders) -->
+    <div style="background:#09090b; padding:12px; border-radius:12px; margin-bottom:12px; border:1px solid #27272a;">
+      <div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:6px;">
+        <span>Volume Musik Rombongan (Receiver):</span>
+        <span id="rx-vol-label" style="font-weight:bold; color:#38bdf8;">100%</span>
+      </div>
+      <input type="range" id="rx-vol-slider" min="0" max="1" step="0.05" value="1.0" style="width:100%;" oninput="changeReceiverVolume(this.value)">
+    </div>
+
+    <!-- Direct Audio Routing Note -->
+    <div id="ducking-indicator" style="font-size:11px; color:#38bdf8; background:#082f49; border:1px solid #0284c7; padding:8px 10px; border-radius:8px; margin-bottom:12px;">
+      ⚡ <strong>Direct Audio Routing:</strong> Interkom & musik berjalan pada gain statis murni tanpa auto-ducking agar stabil di Bluetooth headset & background Xiaomi/HyperOS.
+    </div>
+
+    <button class="btn-sm" style="width:100%; padding:12px; background:#27272a;" onclick="closeDJModal()">TUTUP</button>
+  </div>
+</div>
+
+<!-- Modal Panduan Baterai HP -->
+<div id="battery-modal" class="modal-overlay">
+  <div class="modal-content">
+    <h3 style="margin-top:0; color:#22c55e;">Pengaturan Baterai HP</h3>
+    <p style="font-size:12px; color:#d4d4d8; line-height:1.6;">
+      Agar suara interkom & GPS tidak dimatikan Android saat layar HP mati/di saku:<br><br>
+      1. Tekan lama icon Chrome di homescreen &gt; <strong>Info Aplikasi</strong>.<br>
+      2. Pilih menu <strong>Baterai</strong> &gt; Ubah ke <strong>"Tidak Dibatasi" (Unrestricted)</strong>.<br>
+      3. Matikan Mode Hemat Daya di HP.
+    </p>
+    <button class="btn-sm" style="width:100%; padding:14px; background:#22c55e; color:#000; font-weight:bold;" onclick="closeBatteryGuide()">SAYA MENGERTI</button>
+  </div>
+</div>
+
+<!-- Silent audio loop for background keep-alive -->
+<audio id="silent-audio" loop playsinline></audio>
+
+<!-- Audio element for DJ Kapten MP3 -->
+<audio id="dj-audio" loop playsinline></audio>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="app.js"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(console.warn));
+  }
+</script>
+</body>
+</html>

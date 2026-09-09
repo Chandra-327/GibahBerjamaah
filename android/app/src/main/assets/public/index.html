@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="id" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>Gibah Berjamaah - Interkom Suara & Peta GPS Touring</title>
+    <meta name="description" content="Interkom Suara & Peta GPS Real-Time khusus touring motor dengan WebRTC audio noise suppression, PTT, background keep-alive, dan live tracking." />
+    <meta property="og:title" content="Gibah Berjamaah - Interkom Suara & Peta GPS Touring" />
+    <meta property="og:description" content="Interkom Suara & Peta GPS Real-Time khusus touring motor dengan WebRTC audio noise suppression, PTT, background keep-alive, dan live tracking." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <!-- PWA & Mobile Web App Meta -->
+    <meta name="theme-color" content="#09090b" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Gibah" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <script type="module" crossorigin src="/assets/index-D2rrFvVK.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-ZIDhZe5d.css">
+  </head>
+  <body class="bg-zinc-950 text-white select-none touch-manipulation overflow-hidden">
+    <div id="root"></div>
+    <script>
+      // Register service worker for PWA support
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch((err) => {
+            console.warn('SW registration failed:', err);
+          });
+        });
+      }
+    </script>
+  </body>
+</html>
+
