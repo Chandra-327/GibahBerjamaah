@@ -1,20 +1,18 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   Mic,
   MicOff,
   Radio,
+  Volume2,
+  VolumeX,
   Sun,
   SunDim,
   AlertTriangle,
   BatteryCharging,
   Users,
-  Volume2,
-  VolumeX,
-  RotateCcw,
-  Headphones,
   Music,
 } from 'lucide-react';
-import { IntercomMode, AudioOutputMode } from '../types';
+import { IntercomMode } from '../types';
 
 interface RiderControlsProps {
   mode: IntercomMode;
@@ -25,9 +23,6 @@ interface RiderControlsProps {
   isWakeLocked: boolean;
   onToggleWakeLock: () => void;
   onToggleMute: () => void;
-  onResetAudio?: () => void;
-  audioOutputMode: AudioOutputMode;
-  onToggleAudioOutput: () => void;
   onPttStart: () => void;
   onPttEnd: () => void;
   onOpenAlerts: () => void;
@@ -48,9 +43,6 @@ export const RiderControls: React.FC<RiderControlsProps> = ({
   isWakeLocked,
   onToggleWakeLock,
   onToggleMute,
-  onResetAudio,
-  audioOutputMode,
-  onToggleAudioOutput,
   onPttStart,
   onPttEnd,
   onOpenAlerts,
@@ -61,18 +53,6 @@ export const RiderControls: React.FC<RiderControlsProps> = ({
   isPlayingMusic,
   connectedCount,
 }) => {
-  const [isResetting, setIsResetting] = useState(false);
-
-  const handleResetClick = async () => {
-    if (!onResetAudio || isResetting) return;
-    setIsResetting(true);
-    try {
-      await onResetAudio();
-    } finally {
-      setTimeout(() => setIsResetting(false), 1200);
-    }
-  };
-
   return (
     <div className="w-full bg-zinc-950/95 backdrop-blur-lg border-t border-zinc-800/80 px-3 pt-3 pb-safe z-30 flex flex-col gap-2.5">
       {/* Top Quick Action Bar */}
@@ -88,24 +68,6 @@ export const RiderControls: React.FC<RiderControlsProps> = ({
         >
           <Radio className="w-4 h-4" />
           <span>{mode === 'ALWAYS_ON' ? 'Always-ON' : 'Push-To-Talk'}</span>
-        </button>
-
-        {/* Audio Output Selector (Speakerphone HP vs Headset/Bluetooth) */}
-        <button
-          onClick={onToggleAudioOutput}
-          className={`h-12 px-3 rounded-xl border flex items-center gap-1.5 font-black text-xs uppercase tracking-wider transition-all active:scale-95 ${
-            audioOutputMode === 'speaker'
-              ? 'bg-blue-950/80 border-blue-500 text-blue-300 shadow-md shadow-blue-950/50'
-              : 'bg-indigo-950/80 border-indigo-500 text-indigo-300 shadow-md shadow-indigo-950/50'
-          }`}
-          title={audioOutputMode === 'speaker' ? 'Output: Speaker HP (Bawaan)' : 'Output: Headset / Bluetooth Helm'}
-        >
-          {audioOutputMode === 'speaker' ? (
-            <Volume2 className="w-4 h-4 text-blue-400" />
-          ) : (
-            <Headphones className="w-4 h-4 text-indigo-400" />
-          )}
-          <span>{audioOutputMode === 'speaker' ? 'Speaker' : 'Headset'}</span>
         </button>
 
         {/* Screen Wake Lock */}
@@ -170,25 +132,6 @@ export const RiderControls: React.FC<RiderControlsProps> = ({
           {isMuted ? <MicOff className="w-6 h-6 text-red-400" /> : <Mic className="w-6 h-6 text-emerald-400" />}
           <span>{isMuted ? 'Muted' : 'Mic ON'}</span>
         </button>
-
-        {/* Reset Audio Button (Fail-Safe Soft Reload) */}
-        {onResetAudio && (
-          <button
-            onClick={handleResetClick}
-            disabled={isResetting}
-            className={`h-20 w-16 rounded-2xl flex flex-col items-center justify-center gap-1 font-black text-[10px] uppercase tracking-wider transition-all border shadow-lg active:scale-95 ${
-              isResetting
-                ? 'bg-blue-950/70 border-blue-500 text-blue-300 ring-2 ring-blue-400'
-                : 'bg-zinc-900 border-zinc-700 text-blue-400 hover:text-blue-300'
-            }`}
-            title="Reset Mic / Pulihkan Jalur Audio"
-          >
-            <RotateCcw className={`w-5 h-5 text-blue-400 ${isResetting ? 'animate-spin' : ''}`} />
-            <span className="leading-tight text-center">
-              {isResetting ? 'Memulihkan...' : <>Reset<br/>Audio</>}
-            </span>
-          </button>
-        )}
 
         {/* Big PTT / Transmit Button */}
         {mode === 'PTT' ? (

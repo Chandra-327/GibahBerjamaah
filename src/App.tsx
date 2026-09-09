@@ -75,7 +75,6 @@ export default function App() {
     isTransmitting,
     isMySpeaking,
     initMicrophone,
-    restartAudioStream,
     startPtt,
     endPtt,
     isDjMode,
@@ -98,8 +97,6 @@ export default function App() {
     playPrevTrack,
     togglePlayMusic,
     stopMusic,
-    audioOutputMode,
-    toggleAudioOutput,
     deviceToastMessage,
     dismissDeviceToast,
   } = useIntercomAudio({
@@ -482,9 +479,6 @@ export default function App() {
         isWakeLocked={isWakeLocked}
         onToggleWakeLock={toggleWakeLock}
         onToggleMute={toggleMute}
-        onResetAudio={restartAudioStream}
-        audioOutputMode={audioOutputMode}
-        onToggleAudioOutput={toggleAudioOutput}
         onPttStart={startPtt}
         onPttEnd={endPtt}
         onOpenAlerts={() => setIsAlertModalOpen(true)}

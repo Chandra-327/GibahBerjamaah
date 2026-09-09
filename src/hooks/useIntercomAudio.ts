@@ -1073,6 +1073,7 @@ export function useIntercomAudio({
     if (!musicAudioRef.current) {
       const audioEl = document.createElement('audio');
       audioEl.loop = false;
+      audioEl.crossOrigin = 'anonymous';
       audioEl.setAttribute('playsinline', 'true');
 
       audioEl.addEventListener('ended', () => {
