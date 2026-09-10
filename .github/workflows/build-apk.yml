@@ -37,6 +37,9 @@ jobs:
       - name: Build Web Application
         env:
           VITE_SOCKET_SERVER_URL: https://gibah.purbaya.my.id
+          VITE_TURN_URL: ${{ secrets.VITE_TURN_URL }}
+          VITE_TURN_USERNAME: ${{ secrets.VITE_TURN_USERNAME }}
+          VITE_TURN_CREDENTIAL: ${{ secrets.VITE_TURN_CREDENTIAL }}
         run: npm run build
 
       - name: Sync Capacitor Android

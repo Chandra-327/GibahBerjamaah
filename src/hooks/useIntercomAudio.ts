@@ -96,6 +96,13 @@ export function useIntercomAudio({
       { urls: 'stun:stun2.l.google.com:19302' },
       { urls: 'stun:stun3.l.google.com:19302' },
       { urls: 'stun:stun4.l.google.com:19302' },
+      ...(import.meta.env.VITE_TURN_URL
+        ? [{
+            urls: import.meta.env.VITE_TURN_URL,
+            username: import.meta.env.VITE_TURN_USERNAME,
+            credential: import.meta.env.VITE_TURN_CREDENTIAL,
+          }]
+        : []),
     ],
     iceCandidatePoolSize: 10,
   };
@@ -819,12 +826,31 @@ export function useIntercomAudio({
 
       pc.oniceconnectionstatechange = () => {
         console.log(`[WebRTC] ICE state (${userId}): ${pc.iceConnectionState}`);
-        if (pc.iceConnectionState === 'failed') {
-          console.warn(`[WebRTC] ICE failed with ${userId}, restarting ICE...`);
-          if ('restartIce' in pc) {
-            pc.restartIce();
+        if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+          console.warn(`[WebRTC] ICE tidak stabil dengan ${userId}, memulai negosiasi ulang...`);
+          if (pc.signalingState === 'stable') {
+            pc.createOffer({ offerToReceiveAudio: true, iceRestart: true })
+              .then((offer) => {
+                offer.sdp = offer.sdp || '';
+                return pc.setLocalDescription(offer);
+              })
+              .then(() => {
+                if (pc.localDescription && socket) {
+                  socket.emit('signal', {
+                    to: userId,
+                    signal: pc.localDescription,
+                  });
+                }
+              })
+              .catch((error) => {
+                console.warn(`[WebRTC] Negosiasi ulang gagal untuk ${userId}:`, error);
+              });
           }
         }
+      };
+
+      pc.onconnectionstatechange = () => {
+        console.log(`[WebRTC] Connection state (${userId}): ${pc.connectionState}`);
       };
 
       // Receive remote audio stream (Zoom Conference Call direct playback)
@@ -859,6 +885,9 @@ export function useIntercomAudio({
                 audio.play().catch(() => {});
               }
             }, 300);
+          };
+          audio.onerror = () => {
+            console.warn(`[Audio Element] Remote audio error for ${userId}`);
           };
         }
 
@@ -1088,7 +1117,11 @@ export function useIntercomAudio({
       const audioEl = document.createElement('audio');
       audioEl.loop = false;
       audioEl.crossOrigin = 'anonymous';
+      audioEl.preload = 'auto';
       audioEl.setAttribute('playsinline', 'true');
+      audioEl.addEventListener('error', () => {
+        console.warn('[DJ] Sumber musik tidak dapat dibaca oleh WebView');
+      });
 
       audioEl.addEventListener('ended', () => {
         console.log('[DJ] Lagu berakhir, auto-next...');
