@@ -85,6 +85,7 @@ export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const socketRef = useRef<Socket | null>(null);
   const [socketInstance, setSocketInstance] = useState<Socket | null>(null);
+  const isCurrentRiderCaptain = djCaptain?.userId === socketRef.current?.id;
 
   // Device APIs
   const { batteryLevel } = useBattery();
@@ -547,14 +548,14 @@ export default function App() {
         sortMode={sortMode}
         onSetSortMode={setPlaylistSortMode}
         onLoadFiles={loadMusicFiles}
-        onLoadDemoTracks={loadDemoTouringTracks}
+        onLoadDemoTracks={isCurrentRiderCaptain ? loadDemoTouringTracks : undefined}
         onSelectTrack={playTrackAtIndex}
         onNextTrack={playNextTrack}
         onPrevTrack={playPrevTrack}
         onTogglePlay={togglePlayMusic}
         onStop={stopMusic}
         djCaptain={djCaptain}
-        isCurrentRiderCaptain={djCaptain?.userId === socketRef.current?.id}
+        isCurrentRiderCaptain={isCurrentRiderCaptain}
         onAcquireCaptain={() => socketRef.current?.emit('dj-captain-acquire')}
         onReleaseCaptain={() => {
           stopMusic();

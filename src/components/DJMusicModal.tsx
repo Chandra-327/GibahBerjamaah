@@ -211,6 +211,7 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
           {onLoadDemoTracks && (
             <button
               onClick={onLoadDemoTracks}
+              disabled={!isCurrentRiderCaptain}
               className="w-full py-2.5 rounded-xl bg-gradient-to-r from-purple-900/40 via-indigo-900/40 to-purple-900/40 hover:from-purple-800/50 hover:to-indigo-800/50 border border-purple-500/30 text-xs font-bold text-purple-200 flex items-center justify-center gap-2 active:scale-98 transition-all"
             >
               <Music className="w-4 h-4 text-purple-400 animate-pulse" />

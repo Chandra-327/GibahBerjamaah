@@ -1080,6 +1080,10 @@ export function useIntercomAudio({
     if (!audioContextRef.current) return;
     const ctx = audioContextRef.current;
 
+    if (!mixedDestinationRef.current) {
+      mixedDestinationRef.current = ctx.createMediaStreamDestination();
+    }
+
     if (!musicAudioRef.current) {
       const audioEl = document.createElement('audio');
       audioEl.loop = false;
@@ -1105,10 +1109,8 @@ export function useIntercomAudio({
       // Cabang 1: Diarahkan ke audioContext.destination (speaker/headset HP Kapten)
       gainNode.connect(ctx.destination);
 
-      // Cabang 2: Diarahkan ke MediaStreamAudioDestinationNode (WebRTC P2P stream ke rider lain)
-      if (mixedDestinationRef.current) {
-        gainNode.connect(mixedDestinationRef.current);
-      }
+      // Cabang 2: mixed stream yang dikirim melalui track WebRTC kapten.
+      gainNode.connect(mixedDestinationRef.current);
     }
   }, [musicVolume]);
 
