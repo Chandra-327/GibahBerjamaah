@@ -670,18 +670,21 @@ export function useIntercomAudio({
 
   // Get active outgoing track (mic or DJ mixed)
   const getActiveOutgoingTrack = useCallback(() => {
-    if (isDjMode && mixedDestinationRef.current) {
+    // Keep one stable WebRTC track for the whole room session. Music is
+    // mixed into this destination when enabled instead of replacing the
+    // microphone track while peers are connected.
+    if (mixedDestinationRef.current) {
       return mixedDestinationRef.current.stream.getAudioTracks()[0] || null;
     }
     return localStreamRef.current?.getAudioTracks()[0] || localStream?.getAudioTracks()[0] || null;
-  }, [isDjMode, localStream]);
+  }, [localStream]);
 
   const getActiveOutgoingStream = useCallback(() => {
-    if (isDjMode && mixedDestinationRef.current) {
+    if (mixedDestinationRef.current) {
       return mixedDestinationRef.current.stream;
     }
     return localStreamRef.current || localStream;
-  }, [isDjMode, localStream]);
+  }, [localStream]);
 
   // Replace or add track on all active peer connections when outgoing track changes
   const syncTrackToPeers = useCallback(() => {

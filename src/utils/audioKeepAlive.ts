@@ -6,6 +6,7 @@ let silentAudioElement: HTMLAudioElement | null = null;
 let audioContext: AudioContext | null = null;
 let keepAliveOscillator: OscillatorNode | null = null;
 let keepAliveGain: GainNode | null = null;
+let cachedSilentWavUrl: string | null = null;
 
 // Generate a valid 1-second silent stereo PCM WAV buffer
 function createSilentWavBlob(): Blob {
@@ -49,10 +50,26 @@ function writeString(view: DataView, offset: number, string: string) {
   }
 }
 
-let cachedSilentWavUrl: string | null = null;
-
 export function startBackgroundAudioKeepAlive(): () => void {
   try {
+    if (!silentAudioElement) {
+      if (!cachedSilentWavUrl) {
+        cachedSilentWavUrl = URL.createObjectURL(createSilentWavBlob());
+      }
+      silentAudioElement = document.createElement('audio');
+      silentAudioElement.src = cachedSilentWavUrl;
+      silentAudioElement.loop = true;
+      silentAudioElement.preload = 'auto';
+      silentAudioElement.volume = 0;
+      silentAudioElement.setAttribute('playsinline', 'true');
+      silentAudioElement.setAttribute('aria-hidden', 'true');
+      silentAudioElement.style.display = 'none';
+      document.body.appendChild(silentAudioElement);
+      silentAudioElement.play().catch((error) => {
+        console.warn('[KeepAlive] Silent background audio did not start:', error);
+      });
+    }
+
     if ('mediaSession' in navigator) {
       try {
         navigator.mediaSession.metadata = new MediaMetadata({
@@ -79,8 +96,13 @@ export function stopBackgroundAudioKeepAlive() {
     try {
       silentAudioElement.pause();
       silentAudioElement.src = '';
+      silentAudioElement.remove();
     } catch {}
     silentAudioElement = null;
+  }
+  if (cachedSilentWavUrl) {
+    URL.revokeObjectURL(cachedSilentWavUrl);
+    cachedSilentWavUrl = null;
   }
   if (keepAliveOscillator) {
     try {

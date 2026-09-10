@@ -295,6 +295,9 @@ export default function App() {
     });
     socket.on('dj-captain-state', (data: DJCaptainState | null) => setDjCaptain(data));
     socket.on('dj-captain-rejected', () => {
+      setDjCaptain((current) =>
+        current?.userId === socket.id ? null : current
+      );
       console.warn('[DJ] Kapten musik sedang digunakan rider lain');
     });
 
@@ -569,11 +572,22 @@ export default function App() {
         djCaptain={djCaptain}
         isCurrentRiderCaptain={isCurrentRiderCaptain}
         canControlMusic={canControlMusic}
-        onAcquireCaptain={() => socketRef.current?.emit('dj-captain-acquire')}
+        onAcquireCaptain={() => {
+          const socket = socketRef.current;
+          if (!socket?.id) return;
+          setDjCaptain({ userId: socket.id, djName: callsign });
+          socket.emit('dj-captain-acquire');
+        }}
         onReleaseCaptain={() => {
           stopMusic();
           setIsDjMode(false);
-          socketRef.current?.emit('dj-captain-release');
+          const socket = socketRef.current;
+          if (socket?.id) {
+            setDjCaptain((current) =>
+              current?.userId === socket.id ? null : current
+            );
+            socket.emit('dj-captain-release');
+          }
         }}
       />
 
