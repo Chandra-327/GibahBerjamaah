@@ -668,23 +668,22 @@ export function useIntercomAudio({
     updateAudioOutput(nextMode);
   }, [audioOutputMode, updateAudioOutput]);
 
-  // Get active outgoing track (mic or DJ mixed)
+  // Use the native microphone track until music is actually playing. Some
+  // Android WebViews expose a live but silent MediaStreamDestination track
+  // before its media element has produced audio.
   const getActiveOutgoingTrack = useCallback(() => {
-    // Keep one stable WebRTC track for the whole room session. Music is
-    // mixed into this destination when enabled instead of replacing the
-    // microphone track while peers are connected.
-    if (mixedDestinationRef.current) {
+    if (isDjMode && isMusicPlaying && mixedDestinationRef.current) {
       return mixedDestinationRef.current.stream.getAudioTracks()[0] || null;
     }
     return localStreamRef.current?.getAudioTracks()[0] || localStream?.getAudioTracks()[0] || null;
-  }, [localStream]);
+  }, [isDjMode, isMusicPlaying, localStream]);
 
   const getActiveOutgoingStream = useCallback(() => {
-    if (mixedDestinationRef.current) {
+    if (isDjMode && isMusicPlaying && mixedDestinationRef.current) {
       return mixedDestinationRef.current.stream;
     }
     return localStreamRef.current || localStream;
-  }, [localStream]);
+  }, [isDjMode, isMusicPlaying, localStream]);
 
   // Replace or add track on all active peer connections when outgoing track changes
   const syncTrackToPeers = useCallback(() => {
@@ -711,10 +710,11 @@ export function useIntercomAudio({
     });
   }, [getActiveOutgoingStream, getActiveOutgoingTrack]);
 
-  // Trigger sync when DJ mode or localStream changes
+  // Replace the outgoing track only when playback state changes, not merely
+  // when the DJ modal is opened or a playlist is loaded.
   useEffect(() => {
     syncTrackToPeers();
-  }, [isDjMode, localStream, syncTrackToPeers]);
+  }, [isDjMode, isMusicPlaying, localStream, syncTrackToPeers]);
 
   // 2. Initialize Microphone with Wind & Noise Suppression
   const initMicrophone = useCallback(async () => {
