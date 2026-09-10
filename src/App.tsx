@@ -114,7 +114,6 @@ export default function App() {
     sortMode,
     setPlaylistSortMode,
     loadMusicFiles,
-    loadDemoTouringTracks,
     playTrackAtIndex,
     playNextTrack,
     playPrevTrack,
@@ -549,7 +548,6 @@ export default function App() {
         sortMode={sortMode}
         onSetSortMode={setPlaylistSortMode}
         onLoadFiles={loadMusicFiles}
-        onLoadDemoTracks={isCurrentRiderCaptain ? loadDemoTouringTracks : undefined}
         onSelectTrack={playTrackAtIndex}
         onNextTrack={playNextTrack}
         onPrevTrack={playPrevTrack}

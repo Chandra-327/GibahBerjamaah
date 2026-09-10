@@ -37,7 +37,6 @@ interface DJMusicModalProps {
   sortMode: 'NAME' | 'SHUFFLE' | 'DATE';
   onSetSortMode: (mode: 'NAME' | 'SHUFFLE' | 'DATE') => void;
   onLoadFiles: (files: File[]) => void;
-  onLoadDemoTracks?: () => void;
   onSelectTrack: (index: number) => void;
   onNextTrack: () => void;
   onPrevTrack: () => void;
@@ -66,7 +65,6 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
   sortMode,
   onSetSortMode,
   onLoadFiles,
-  onLoadDemoTracks,
   onSelectTrack,
   onNextTrack,
   onPrevTrack,
@@ -207,17 +205,6 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
               <span>Pilih Berkas MP3</span>
             </button>
           </div>
-
-          {onLoadDemoTracks && (
-            <button
-              onClick={onLoadDemoTracks}
-              disabled={!isCurrentRiderCaptain}
-              className="w-full py-2.5 rounded-xl bg-gradient-to-r from-purple-900/40 via-indigo-900/40 to-purple-900/40 hover:from-purple-800/50 hover:to-indigo-800/50 border border-purple-500/30 text-xs font-bold text-purple-200 flex items-center justify-center gap-2 active:scale-98 transition-all"
-            >
-              <Music className="w-4 h-4 text-purple-400 animate-pulse" />
-              <span>Putar Demo Musik Touring (Tanpa File)</span>
-            </button>
-          )}
 
           {/* Current track indicator */}
           <div className="text-xs font-bold truncate text-zinc-200 flex items-center gap-2 pt-1 border-t border-zinc-800/80">

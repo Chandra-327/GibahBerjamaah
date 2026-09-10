@@ -78,6 +78,7 @@ export function useIntercomAudio({
 
   // DJ Nodes
   const musicAudioRef = useRef<HTMLAudioElement | null>(null);
+  const musicObjectUrlRef = useRef<string | null>(null);
   const musicSourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
   const musicGainNodeRef = useRef<GainNode | null>(null);
   const micGainNodeRef = useRef<GainNode | null>(null);
@@ -1122,18 +1123,29 @@ export function useIntercomAudio({
     if (!musicAudioRef.current) {
       const audioEl = document.createElement('audio');
       audioEl.loop = false;
-      audioEl.crossOrigin = 'anonymous';
       audioEl.preload = 'auto';
       audioEl.setAttribute('playsinline', 'true');
+      audioEl.setAttribute('webkit-playsinline', 'true');
+      audioEl.style.position = 'fixed';
+      audioEl.style.bottom = '0';
+      audioEl.style.right = '0';
+      audioEl.style.width = '1px';
+      audioEl.style.height = '1px';
+      audioEl.style.opacity = '0.01';
+      audioEl.style.pointerEvents = 'none';
       audioEl.addEventListener('error', () => {
-        console.warn('[DJ] Sumber musik tidak dapat dibaca oleh WebView');
+        setIsMusicPlaying(false);
+        showDeviceToast('⚠️ File musik tidak dapat diputar di perangkat ini');
       });
+      audioEl.addEventListener('play', () => setIsMusicPlaying(true));
+      audioEl.addEventListener('pause', () => setIsMusicPlaying(false));
 
       audioEl.addEventListener('ended', () => {
         console.log('[DJ] Lagu berakhir, auto-next...');
         playNextTrackRef.current?.();
       });
 
+      document.body.appendChild(audioEl);
       musicAudioRef.current = audioEl;
 
       const sourceNode = ctx.createMediaElementSource(audioEl);
@@ -1151,7 +1163,7 @@ export function useIntercomAudio({
       // Cabang 2: mixed stream yang dikirim melalui track WebRTC kapten.
       gainNode.connect(mixedDestinationRef.current);
     }
-  }, [musicVolume]);
+  }, [musicVolume, showDeviceToast]);
 
   // Sort playlist
   const applySort = useCallback(
@@ -1206,48 +1218,6 @@ export function useIntercomAudio({
     [playlist, ensureDJNodes, resumeAudioContext, socket]
   );
 
-  // Muat Lagu Demo Touring Bebas Hak Cipta untuk tes audio
-  const loadDemoTouringTracks = useCallback(() => {
-    const demoTracks: MusicTrack[] = [
-      {
-        title: 'Touring Synth Anthem',
-        name: 'Touring Synth Anthem.mp3',
-        url: 'https://cdn.freesound.org/previews/557/557815_11861866-lq.mp3',
-        lastModified: Date.now() - 1000,
-      },
-      {
-        title: 'Highway Cruiser Lo-Fi',
-        name: 'Highway Cruiser Lo-Fi.mp3',
-        url: 'https://cdn.freesound.org/previews/612/612662_11861866-lq.mp3',
-        lastModified: Date.now() - 2000,
-      },
-      {
-        title: 'Sunset Coast Ride',
-        name: 'Sunset Coast Ride.mp3',
-        url: 'https://cdn.freesound.org/previews/415/415804_5121236-lq.mp3',
-        lastModified: Date.now() - 3000,
-      },
-    ];
-
-    setOriginalPlaylist(demoTracks);
-    setPlaylist(demoTracks);
-    setCurrentTrackIndex(0);
-    setMusicTrackTitle(demoTracks[0].title);
-    ensureDJNodes();
-    setIsDjMode(true);
-    if (musicAudioRef.current) {
-      musicAudioRef.current.src = demoTracks[0].url!;
-      musicAudioRef.current
-        .play()
-        .then(() => {
-          setIsMusicPlaying(true);
-          socket?.emit('dj-music-state', { isPlaying: true, trackTitle: demoTracks[0].title });
-        })
-        .catch((e) => console.warn('Demo play error:', e));
-    }
-    setDeviceToastMessage('🎵 Lagu Demo Touring dimuat & siap diputar!');
-  }, [ensureDJNodes, socket]);
-
   // Play next track (auto-next loop)
   const playNextTrack = useCallback(async () => {
     if (playlist.length === 0) return;
@@ -1292,7 +1262,12 @@ export function useIntercomAudio({
       setIsDjMode(true);
 
       if (musicAudioRef.current) {
-        musicAudioRef.current.src = URL.createObjectURL(sorted[0].file);
+        if (musicObjectUrlRef.current) {
+          URL.revokeObjectURL(musicObjectUrlRef.current);
+        }
+        musicObjectUrlRef.current = URL.createObjectURL(sorted[0].file);
+        musicAudioRef.current.src = musicObjectUrlRef.current;
+        musicAudioRef.current.load();
       }
     },
     [sortMode, applySort, ensureDJNodes]
@@ -1368,6 +1343,13 @@ export function useIntercomAudio({
       if (musicAudioRef.current) {
         musicAudioRef.current.pause();
         musicAudioRef.current.src = '';
+        if (musicAudioRef.current.parentNode) {
+          musicAudioRef.current.parentNode.removeChild(musicAudioRef.current);
+        }
+      }
+      if (musicObjectUrlRef.current) {
+        URL.revokeObjectURL(musicObjectUrlRef.current);
+        musicObjectUrlRef.current = null;
       }
       if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
         try {
@@ -1426,7 +1408,6 @@ export function useIntercomAudio({
     sortMode,
     setPlaylistSortMode,
     loadMusicFiles,
-    loadDemoTouringTracks,
     playTrackAtIndex,
     playNextTrack,
     playPrevTrack,
