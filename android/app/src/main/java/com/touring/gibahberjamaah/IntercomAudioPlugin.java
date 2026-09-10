@@ -41,6 +41,7 @@ public class IntercomAudioPlugin extends Plugin {
     private AudioManager audioManager;
     private AudioFocusRequest audioFocusRequest;
     private AudioManager.OnAudioFocusChangeListener focusListener;
+    private AudioManager.AudioDeviceCallback audioDeviceCallback;
 
     @Override
     public void load() {
@@ -54,6 +55,20 @@ public class IntercomAudioPlugin extends Plugin {
                 notifyListeners("audioFocusChanged", new JSObject().put("hasFocus", true));
             }
         };
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            audioDeviceCallback = new AudioManager.AudioDeviceCallback() {
+                @Override
+                public void onAudioDevicesAdded(android.media.AudioDeviceInfo[] addedDevices) {
+                    refreshAudioRoute();
+                }
+
+                @Override
+                public void onAudioDevicesRemoved(android.media.AudioDeviceInfo[] removedDevices) {
+                    refreshAudioRoute();
+                }
+            };
+            audioManager.registerAudioDeviceCallback(audioDeviceCallback, null);
+        }
     }
 
     @com.getcapacitor.PluginMethod
@@ -66,6 +81,7 @@ public class IntercomAudioPlugin extends Plugin {
 
         configureAudioMode();
         requestAudioFocus();
+        refreshAudioRoute();
 
         Intent serviceIntent = new Intent(getContext(), IntercomAudioService.class);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -153,6 +169,13 @@ public class IntercomAudioPlugin extends Plugin {
     }
 
     @com.getcapacitor.PluginMethod
+    public void refreshAudioRoute(PluginCall call) {
+        configureAudioMode();
+        refreshAudioRoute();
+        call.resolve(new JSObject().put("refreshed", true));
+    }
+
+    @com.getcapacitor.PluginMethod
     public void getAudioState(PluginCall call) {
         JSObject result = new JSObject();
         result.put("mode", audioManager == null ? AudioManager.MODE_NORMAL : audioManager.getMode());
@@ -166,6 +189,35 @@ public class IntercomAudioPlugin extends Plugin {
             return;
         }
         audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+    }
+
+    private void refreshAudioRoute() {
+        if (audioManager == null) {
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            android.media.AudioDeviceInfo speaker = null;
+            for (android.media.AudioDeviceInfo device : audioManager.getAvailableCommunicationDevices()) {
+                int type = device.getType();
+                if (type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                        || type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET
+                        || type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+                        || type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET) {
+                    if (audioManager.setCommunicationDevice(device)) {
+                        return;
+                    }
+                }
+                if (type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                    speaker = device;
+                }
+            }
+            if (speaker != null) {
+                audioManager.setCommunicationDevice(speaker);
+            }
+        } else {
+            audioManager.setSpeakerphoneOn(true);
+        }
     }
 
     private void requestAudioFocus() {

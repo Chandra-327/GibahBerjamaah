@@ -6,6 +6,7 @@ import { playIntercomChirp } from '../utils/audioKeepAlive';
 
 const IntercomAudio = registerPlugin<{
   setAudioOutput: (options: { output: AudioOutputMode }) => Promise<void>;
+  refreshAudioRoute: () => Promise<void>;
 }>('IntercomAudio');
 
 interface UseIntercomAudioOptions {
@@ -332,6 +333,11 @@ export function useIntercomAudio({
       window.clearTimeout(audioReloadDebounceTimerRef.current);
     }
     audioReloadDebounceTimerRef.current = window.setTimeout(() => {
+      if (Capacitor.isNativePlatform()) {
+        IntercomAudio.refreshAudioRoute().catch((error) => {
+          console.warn('[Audio Route] Refresh native route gagal:', error);
+        });
+      }
       restartAudioStream();
     }, 1500);
   }, [showDeviceToast]);

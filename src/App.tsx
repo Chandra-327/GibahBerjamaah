@@ -22,6 +22,7 @@ const socketServerUrl = import.meta.env.VITE_SOCKET_SERVER_URL?.trim();
 const IntercomAudio = registerPlugin<{
   startAudioSession: () => Promise<void>;
   stopAudioSession: () => Promise<void>;
+  refreshAudioRoute: () => Promise<void>;
   setAudioOutput: (options: { output: 'speaker' | 'headset' }) => Promise<void>;
   requestAppPermissions: () => Promise<{ granted: boolean }>;
   openBatteryOptimizationSettings: () => Promise<{ opened: boolean }>;
