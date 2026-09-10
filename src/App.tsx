@@ -18,7 +18,8 @@ import { DJMusicModal } from './components/DJMusicModal';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { Radio, Wifi, WifiOff, Users, Battery, LogOut, Info, Music, Disc3 } from 'lucide-react';
 
-const socketServerUrl = import.meta.env.VITE_SOCKET_SERVER_URL?.trim();
+const socketServerUrl =
+  import.meta.env.VITE_SOCKET_SERVER_URL?.trim() || 'https://gibah.purbaya.my.id';
 const IntercomAudio = registerPlugin<{
   startAudioSession: () => Promise<void>;
   stopAudioSession: () => Promise<void>;
