@@ -88,6 +88,8 @@ export default function App() {
   const socketRef = useRef<Socket | null>(null);
   const [socketInstance, setSocketInstance] = useState<Socket | null>(null);
   const isCurrentRiderCaptain = djCaptain?.userId === socketRef.current?.id;
+  // Keep local playback usable when the public server has not acknowledged captain state yet.
+  const canControlMusic = isCurrentRiderCaptain || !djCaptain;
 
   // Device APIs
   const { batteryLevel } = useBattery();
@@ -133,7 +135,15 @@ export default function App() {
 
   // Handle Mute Toggle
   const toggleMute = useCallback(() => {
-    setIsMuted((prev) => !prev);
+    setIsMuted((prev) => {
+      const nextMuted = !prev;
+      socketRef.current?.emit('voice-state', {
+        isSpeaking: false,
+        isMuted: nextMuted,
+      });
+      playIntercomChirp(nextMuted ? 'ptt-off' : 'ptt-on');
+      return nextMuted;
+    });
   }, []);
 
   // Media Session API (Binds Bluetooth Helmet buttons)
@@ -556,6 +566,7 @@ export default function App() {
         onStop={stopMusic}
         djCaptain={djCaptain}
         isCurrentRiderCaptain={isCurrentRiderCaptain}
+        canControlMusic={canControlMusic}
         onAcquireCaptain={() => socketRef.current?.emit('dj-captain-acquire')}
         onReleaseCaptain={() => {
           stopMusic();

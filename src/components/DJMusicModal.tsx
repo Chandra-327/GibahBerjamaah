@@ -44,6 +44,7 @@ interface DJMusicModalProps {
   onStop: () => void;
   djCaptain: DJCaptainState | null;
   isCurrentRiderCaptain: boolean;
+  canControlMusic: boolean;
   onAcquireCaptain: () => void;
   onReleaseCaptain: () => void;
 }
@@ -72,6 +73,7 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
   onStop,
   djCaptain,
   isCurrentRiderCaptain,
+  canControlMusic,
   onAcquireCaptain,
   onReleaseCaptain,
 }) => {
@@ -189,7 +191,7 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
           <div className="grid grid-cols-2 gap-2">
             <button
               onClick={() => folderInputRef.current?.click()}
-              disabled={!isCurrentRiderCaptain}
+              disabled={!canControlMusic}
               className="py-3 rounded-xl bg-purple-950/50 hover:bg-purple-900/60 border border-purple-600/40 text-xs font-bold text-purple-200 flex items-center justify-center gap-2 active:scale-98 transition-all"
             >
               <FolderOpen className="w-4 h-4 text-purple-400" />
@@ -198,7 +200,7 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
 
             <button
               onClick={() => filesInputRef.current?.click()}
-              disabled={!isCurrentRiderCaptain}
+              disabled={!canControlMusic}
               className="py-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs font-bold text-zinc-200 flex items-center justify-center gap-2 active:scale-98 transition-all"
             >
               <FilePlus className="w-4 h-4 text-emerald-400" />
@@ -267,7 +269,7 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
                   <button
                     key={`${track.name}-${idx}`}
                     onClick={() => onSelectTrack(idx)}
-                    disabled={!isCurrentRiderCaptain}
+                    disabled={!canControlMusic}
                     className={`w-full text-left px-2.5 py-1.5 rounded-lg flex items-center justify-between text-xs transition-all ${
                       isActive
                         ? 'bg-purple-950 border border-purple-500/80 text-purple-200 font-bold'
@@ -294,7 +296,7 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
         <div className="flex items-center gap-2">
           <button
             onClick={onPrevTrack}
-            disabled={!isCurrentRiderCaptain || playlist.length === 0}
+            disabled={!canControlMusic || playlist.length === 0}
             className="w-14 h-14 rounded-2xl bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-300 flex items-center justify-center active:scale-95 transition-all"
             title="Lagu Sebelumnya"
           >
@@ -303,7 +305,7 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
 
           <button
             onClick={onTogglePlay}
-            disabled={!isCurrentRiderCaptain || (!trackTitle && playlist.length === 0)}
+            disabled={!canControlMusic || (!trackTitle && playlist.length === 0)}
             className={`flex-1 h-14 rounded-2xl font-black text-sm uppercase tracking-wider flex items-center justify-center gap-2 transition-all shadow-xl active:scale-98 ${
               !trackTitle && playlist.length === 0
                 ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed border border-zinc-800'
@@ -327,7 +329,7 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
 
           <button
             onClick={onNextTrack}
-            disabled={!isCurrentRiderCaptain || playlist.length === 0}
+            disabled={!canControlMusic || playlist.length === 0}
             className="w-14 h-14 rounded-2xl bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-300 flex items-center justify-center active:scale-95 transition-all"
             title="Lagu Berikutnya"
           >
@@ -336,7 +338,7 @@ export const DJMusicModal: React.FC<DJMusicModalProps> = ({
 
           <button
             onClick={onStop}
-            disabled={!isCurrentRiderCaptain || (!trackTitle && playlist.length === 0)}
+            disabled={!canControlMusic || (!trackTitle && playlist.length === 0)}
             className="w-14 h-14 rounded-2xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 disabled:opacity-40 text-zinc-300 flex items-center justify-center active:scale-95 transition-all"
             title="Stop Musik"
           >
