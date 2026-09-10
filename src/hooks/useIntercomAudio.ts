@@ -83,9 +83,6 @@ export function useIntercomAudio({
   const musicGainNodeRef = useRef<GainNode | null>(null);
   const micGainNodeRef = useRef<GainNode | null>(null);
   const mixedDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
-  const musicDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
-  const musicSendersRef = useRef<Record<string, RTCRtpSender>>({});
-  const remoteStreamsRef = useRef<Record<string, MediaStream>>({});
 
   // Auto-next track ref
   const playNextTrackRef = useRef<(() => Promise<void>) | null>(null);
@@ -425,25 +422,22 @@ export function useIntercomAudio({
       setLocalStream(newStream);
       const newTrack = newStream.getAudioTracks()[0];
 
-      // Sesuaikan status aktif mikrofon berdasarkan mode
-      if (mode === 'ALWAYS_ON') {
-        newTrack.enabled = !isMuted;
-      } else {
-        newTrack.enabled = isTransmitting && !isMuted;
-      }
+      // Keep the source track alive; PTT/mute is controlled by the mic gain.
+      newTrack.enabled = true;
 
       // Pastikan pipeline WebAudio terhubung ke stream baru
       ensureAudioPipeline(newStream);
 
       // Tentukan active track keluar (mic atau campuran DJ)
       const activeTrack =
-        isDjMode && mixedDestinationRef.current
-          ? mixedDestinationRef.current.stream.getAudioTracks()[0]
-          : newTrack;
-      const streamToPass =
-        isDjMode && mixedDestinationRef.current
-          ? mixedDestinationRef.current.stream
-          : newStream;
+        mixedDestinationRef.current?.stream.getAudioTracks()[0] || newTrack;
+      const streamToPass = mixedDestinationRef.current?.stream || newStream;
+      if (micGainNodeRef.current && audioContextRef.current) {
+        micGainNodeRef.current.gain.setValueAtTime(
+          mode === 'ALWAYS_ON' ? (isMuted ? 0 : 1) : (isTransmitting && !isMuted ? 1 : 0),
+          audioContextRef.current.currentTime
+        );
+      }
 
       // Sinkronkan track baru ke semua WebRTC peer connections
       (Object.values(peersRef.current) as RTCPeerConnection[]).forEach((pc) => {
@@ -471,7 +465,13 @@ export function useIntercomAudio({
       };
       newTrack.onunmute = () => {
         console.log('[Audio Track] Mic di-unmute oleh OS, memulihkan status mic');
-        newTrack.enabled = mode === 'ALWAYS_ON' ? !isMuted : (isTransmitting && !isMuted);
+        newTrack.enabled = true;
+        if (micGainNodeRef.current && audioContextRef.current) {
+          micGainNodeRef.current.gain.setValueAtTime(
+            mode === 'ALWAYS_ON' ? (isMuted ? 0 : 1) : (isTransmitting && !isMuted ? 1 : 0),
+            audioContextRef.current.currentTime
+          );
+        }
         resumeAudioContext();
       };
 
@@ -671,14 +671,15 @@ export function useIntercomAudio({
     updateAudioOutput(nextMode);
   }, [audioOutputMode, updateAudioOutput]);
 
-  // Keep the microphone sender stable. Music is sent as a separate track so
-  // starting DJ playback cannot interrupt the rider voice track.
   const getActiveOutgoingTrack = useCallback(() => {
-    return localStreamRef.current?.getAudioTracks()[0] || localStream?.getAudioTracks()[0] || null;
+    return mixedDestinationRef.current?.stream.getAudioTracks()[0] ||
+      localStreamRef.current?.getAudioTracks()[0] ||
+      localStream?.getAudioTracks()[0] ||
+      null;
   }, [localStream]);
 
   const getActiveOutgoingStream = useCallback(() => {
-    return localStreamRef.current || localStream;
+    return mixedDestinationRef.current?.stream || localStreamRef.current || localStream;
   }, [localStream]);
 
   // Replace or add track on all active peer connections when outgoing track changes
@@ -686,7 +687,7 @@ export function useIntercomAudio({
     const newTrack = getActiveOutgoingTrack();
     if (!newTrack) return;
 
-    Object.entries(peersRef.current).forEach(([peerId, pc]) => {
+    (Object.values(peersRef.current) as RTCPeerConnection[]).forEach((pc) => {
       const senders = pc.getSenders();
       const audioSender = senders.find((s) => s.track && s.track.kind === 'audio');
       if (audioSender) {
@@ -704,28 +705,12 @@ export function useIntercomAudio({
         }
       }
 
-      const musicTrack =
-        isDjMode && isMusicPlaying
-          ? musicDestinationRef.current?.stream.getAudioTracks()[0]
-          : null;
-      const musicSender = musicSendersRef.current[peerId];
-      if (musicTrack && !musicSender) {
-        const musicStream = musicDestinationRef.current?.stream;
-        if (musicStream) {
-          musicSendersRef.current[peerId] = pc.addTrack(musicTrack, musicStream);
-        }
-      } else if (!musicTrack && musicSender) {
-        pc.removeTrack(musicSender);
-        delete musicSendersRef.current[peerId];
-      }
     });
-  }, [getActiveOutgoingStream, getActiveOutgoingTrack, isDjMode, isMusicPlaying]);
+  }, [getActiveOutgoingStream, getActiveOutgoingTrack]);
 
-  // Replace the outgoing track only when playback state changes, not merely
-  // when the DJ modal is opened or a playlist is loaded.
   useEffect(() => {
     syncTrackToPeers();
-  }, [isDjMode, isMusicPlaying, localStream, syncTrackToPeers]);
+  }, [localStream, syncTrackToPeers]);
 
   // 2. Initialize Microphone with Wind & Noise Suppression
   const initMicrophone = useCallback(async () => {
@@ -891,14 +876,7 @@ export function useIntercomAudio({
       pc.ontrack = (event) => {
         console.log(`[WebRTC] Received audio track from ${userId}, track id: ${event.track.id}`);
         const remoteStream =
-          remoteStreamsRef.current[userId] ||
-          ((event.streams && event.streams[0]) ? event.streams[0] : new MediaStream());
-        if (!remoteStreamsRef.current[userId]) {
-          remoteStreamsRef.current[userId] = remoteStream;
-        }
-        if (!remoteStream.getTracks().some((track) => track.id === event.track.id)) {
-          remoteStream.addTrack(event.track);
-        }
+          event.streams && event.streams[0] ? event.streams[0] : new MediaStream([event.track]);
 
         let audio = audioElementsRef.current[userId];
         if (!audio) {
@@ -1094,8 +1072,6 @@ export function useIntercomAudio({
         }
         delete audioElementsRef.current[userId];
       }
-      delete remoteStreamsRef.current[userId];
-      delete musicSendersRef.current[userId];
     };
 
     socket.on('user-connected', handleUserConnected);
@@ -1117,6 +1093,7 @@ export function useIntercomAudio({
     const track = localStream.getAudioTracks()[0];
     if (track) {
       track.enabled = true;
+      micGainNodeRef.current?.gain.setValueAtTime(1, audioContextRef.current?.currentTime ?? 0);
       setIsTransmitting(true);
       playIntercomChirp('ptt-on');
       socket?.emit('voice-state', { isSpeaking: true });
@@ -1127,7 +1104,8 @@ export function useIntercomAudio({
     if (mode !== 'PTT' || !localStream) return;
     const track = localStream.getAudioTracks()[0];
     if (track) {
-      track.enabled = false;
+      track.enabled = true;
+      micGainNodeRef.current?.gain.setValueAtTime(0, audioContextRef.current?.currentTime ?? 0);
       setIsTransmitting(false);
       playIntercomChirp('ptt-off');
       socket?.emit('voice-state', { isSpeaking: false });
@@ -1139,13 +1117,15 @@ export function useIntercomAudio({
     const track = localStream.getAudioTracks()[0];
     if (!track) return;
 
-    if (mode === 'ALWAYS_ON') {
-      track.enabled = !isMuted;
-      setAudioStatus(isMuted ? 'muted' : 'connected');
-    } else {
-      track.enabled = isTransmitting && !isMuted;
-      setAudioStatus(track.enabled ? 'connected' : isMuted ? 'muted' : 'connected');
+    track.enabled = true;
+    const micEnabled = mode === 'ALWAYS_ON' ? !isMuted : isTransmitting && !isMuted;
+    if (micGainNodeRef.current && audioContextRef.current) {
+      micGainNodeRef.current.gain.setValueAtTime(
+        micEnabled ? 1 : 0,
+        audioContextRef.current.currentTime
+      );
     }
+    setAudioStatus(micEnabled ? 'connected' : 'muted');
   }, [localStream, mode, isMuted, isTransmitting]);
 
   // 6. DJ Kapten Audio Engine & Dual Output Routing
@@ -1197,12 +1177,6 @@ export function useIntercomAudio({
       // Cabang 1: Diarahkan ke audioContext.destination (speaker/headset HP Kapten)
       gainNode.connect(ctx.destination);
 
-      // Keep a separate music track so the microphone sender is never
-      // replaced when playback starts.
-      musicDestinationRef.current = ctx.createMediaStreamDestination();
-      gainNode.connect(musicDestinationRef.current);
-
-      // Keep the legacy mixed destination available for recovery paths.
       gainNode.connect(mixedDestinationRef.current);
     }
   }, [musicVolume, showDeviceToast]);
