@@ -88,10 +88,9 @@ export default function App() {
   const socketRef = useRef<Socket | null>(null);
   const [socketInstance, setSocketInstance] = useState<Socket | null>(null);
   const isCurrentRiderCaptain = djCaptain?.userId === socketRef.current?.id;
-  // Local playback must not depend on a possibly stale captain broadcast.
-  // The server only uses captain state for coordination; it does not gate
-  // the dj-music-state event.
-  const canControlMusic = true;
+  // The server's captain broadcast is the single source of truth. Only the
+  // acknowledged captain may control shared music.
+  const canControlMusic = isCurrentRiderCaptain;
 
   // Device APIs
   const { batteryLevel } = useBattery();
@@ -575,7 +574,6 @@ export default function App() {
         onAcquireCaptain={() => {
           const socket = socketRef.current;
           if (!socket?.id) return;
-          setDjCaptain({ userId: socket.id, djName: callsign });
           socket.emit('dj-captain-acquire');
         }}
         onReleaseCaptain={() => {

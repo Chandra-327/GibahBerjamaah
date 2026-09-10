@@ -257,6 +257,7 @@ export function useIntercomAudio({
 
         if (!micGainNodeRef.current) {
           micGainNodeRef.current = ctx.createGain();
+          micGainNodeRef.current.gain.setValueAtTime(1, ctx.currentTime);
           micGainNodeRef.current.connect(mixedDestinationRef.current);
         }
 
@@ -751,6 +752,9 @@ export function useIntercomAudio({
         // Destination for mixed audio (Mic + DJ MP3) -> routed to WebRTC peers
         const mixedDest = ctx.createMediaStreamDestination();
         mixedDestinationRef.current = mixedDest;
+        mixedDest.stream.getAudioTracks().forEach((track) => {
+          track.enabled = true;
+        });
         micGain.connect(mixedDest);
 
         // VAD interval check (Runs purely in browser)
@@ -857,19 +861,6 @@ export function useIntercomAudio({
 
       pc.onconnectionstatechange = () => {
         console.log(`[WebRTC] Connection state (${userId}): ${pc.connectionState}`);
-      };
-
-      pc.onnegotiationneeded = async () => {
-        if (pc.signalingState !== 'stable' || !socket) return;
-        try {
-          const offer = await pc.createOffer({ offerToReceiveAudio: true });
-          await pc.setLocalDescription(offer);
-          if (pc.localDescription) {
-            socket.emit('signal', { to: userId, signal: pc.localDescription });
-          }
-        } catch (error) {
-          console.warn(`[WebRTC] Renegosiasi audio gagal untuk ${userId}:`, error);
-        }
       };
 
       // Receive remote audio stream (Zoom Conference Call direct playback)
