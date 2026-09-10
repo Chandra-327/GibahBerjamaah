@@ -7,6 +7,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.media.AudioAttributes;
+import android.media.AudioDeviceCallback;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.os.Build;
@@ -41,7 +42,7 @@ public class IntercomAudioPlugin extends Plugin {
     private AudioManager audioManager;
     private AudioFocusRequest audioFocusRequest;
     private AudioManager.OnAudioFocusChangeListener focusListener;
-    private AudioManager.AudioDeviceCallback audioDeviceCallback;
+    private AudioDeviceCallback audioDeviceCallback;
 
     @Override
     public void load() {
@@ -56,7 +57,7 @@ public class IntercomAudioPlugin extends Plugin {
             }
         };
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            audioDeviceCallback = new AudioManager.AudioDeviceCallback() {
+            audioDeviceCallback = new AudioDeviceCallback() {
                 @Override
                 public void onAudioDevicesAdded(android.media.AudioDeviceInfo[] addedDevices) {
                     refreshAudioRoute();
