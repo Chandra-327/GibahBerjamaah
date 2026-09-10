@@ -26,7 +26,6 @@ var import_express = __toESM(require("express"), 1);
 var import_http = __toESM(require("http"), 1);
 var import_socket = require("socket.io");
 var import_path = __toESM(require("path"), 1);
-var import_vite = require("vite");
 var app = (0, import_express.default)();
 var server = import_http.default.createServer(app);
 var io = new import_socket.Server(server, {
@@ -39,6 +38,7 @@ var io = new import_socket.Server(server, {
 });
 app.use(import_express.default.json());
 var riders = {};
+var djCaptains = {};
 app.get("/api/health", (_req, res) => {
   const activeRooms = new Set(Object.values(riders).map((r) => r.roomId));
   res.json({
@@ -105,6 +105,11 @@ io.on("connection", (socket) => {
       roomId,
       users: existingInRoom
     });
+    const captainId = djCaptains[roomId];
+    socket.emit("dj-captain-state", captainId ? {
+      userId: captainId,
+      djName: riders[captainId]?.username || "Rider"
+    } : null);
     socket.to(roomId).emit("user-connected", {
       userId: socket.id,
       username,
@@ -169,6 +174,7 @@ io.on("connection", (socket) => {
   socket.on("dj-music-state", (data) => {
     const rider = riders[socket.id];
     if (!rider) return;
+    if (djCaptains[rider.roomId] !== socket.id) return;
     socket.to(rider.roomId).emit("dj-music-state", {
       userId: socket.id,
       djName: rider.username,
@@ -176,12 +182,35 @@ io.on("connection", (socket) => {
       trackTitle: data.trackTitle || "Musik Touring"
     });
   });
+  socket.on("dj-captain-acquire", () => {
+    const rider = riders[socket.id];
+    if (!rider) return;
+    if (djCaptains[rider.roomId] && djCaptains[rider.roomId] !== socket.id) {
+      socket.emit("dj-captain-rejected");
+      return;
+    }
+    djCaptains[rider.roomId] = socket.id;
+    io.to(rider.roomId).emit("dj-captain-state", {
+      userId: socket.id,
+      djName: rider.username
+    });
+  });
+  socket.on("dj-captain-release", () => {
+    const rider = riders[socket.id];
+    if (!rider || djCaptains[rider.roomId] !== socket.id) return;
+    delete djCaptains[rider.roomId];
+    io.to(rider.roomId).emit("dj-captain-state", null);
+  });
   socket.on("disconnect", () => {
     const rider = riders[socket.id];
     if (rider) {
       const { roomId, username } = rider;
       console.log(`[LEAVE] ${username} (${socket.id}) disconnected from ${roomId}`);
       socket.to(roomId).emit("user-disconnected", socket.id);
+      if (djCaptains[roomId] === socket.id) {
+        delete djCaptains[roomId];
+        socket.to(roomId).emit("dj-captain-state", null);
+      }
       delete riders[socket.id];
     }
   });
@@ -197,8 +226,9 @@ setInterval(() => {
 }, 60 * 1e3);
 async function start() {
   const PORT = 3e3;
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await (0, import_vite.createServer)({
+  if (false) {
+    const { createServer: createViteServer } = await null;
+    const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa"
     });
