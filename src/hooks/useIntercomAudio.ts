@@ -83,6 +83,9 @@ export function useIntercomAudio({
   const musicGainNodeRef = useRef<GainNode | null>(null);
   const micGainNodeRef = useRef<GainNode | null>(null);
   const mixedDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const musicDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const musicSendersRef = useRef<Record<string, RTCRtpSender>>({});
+  const remoteStreamsRef = useRef<Record<string, MediaStream>>({});
 
   // Auto-next track ref
   const playNextTrackRef = useRef<(() => Promise<void>) | null>(null);
@@ -668,29 +671,22 @@ export function useIntercomAudio({
     updateAudioOutput(nextMode);
   }, [audioOutputMode, updateAudioOutput]);
 
-  // Use the native microphone track until music is actually playing. Some
-  // Android WebViews expose a live but silent MediaStreamDestination track
-  // before its media element has produced audio.
+  // Keep the microphone sender stable. Music is sent as a separate track so
+  // starting DJ playback cannot interrupt the rider voice track.
   const getActiveOutgoingTrack = useCallback(() => {
-    if (isDjMode && isMusicPlaying && mixedDestinationRef.current) {
-      return mixedDestinationRef.current.stream.getAudioTracks()[0] || null;
-    }
     return localStreamRef.current?.getAudioTracks()[0] || localStream?.getAudioTracks()[0] || null;
-  }, [isDjMode, isMusicPlaying, localStream]);
+  }, [localStream]);
 
   const getActiveOutgoingStream = useCallback(() => {
-    if (isDjMode && isMusicPlaying && mixedDestinationRef.current) {
-      return mixedDestinationRef.current.stream;
-    }
     return localStreamRef.current || localStream;
-  }, [isDjMode, isMusicPlaying, localStream]);
+  }, [localStream]);
 
   // Replace or add track on all active peer connections when outgoing track changes
   const syncTrackToPeers = useCallback(() => {
     const newTrack = getActiveOutgoingTrack();
     if (!newTrack) return;
 
-    (Object.values(peersRef.current) as RTCPeerConnection[]).forEach((pc) => {
+    Object.entries(peersRef.current).forEach(([peerId, pc]) => {
       const senders = pc.getSenders();
       const audioSender = senders.find((s) => s.track && s.track.kind === 'audio');
       if (audioSender) {
@@ -707,8 +703,23 @@ export function useIntercomAudio({
           console.warn('[WebRTC] addTrack warning:', e);
         }
       }
+
+      const musicTrack =
+        isDjMode && isMusicPlaying
+          ? musicDestinationRef.current?.stream.getAudioTracks()[0]
+          : null;
+      const musicSender = musicSendersRef.current[peerId];
+      if (musicTrack && !musicSender) {
+        const musicStream = musicDestinationRef.current?.stream;
+        if (musicStream) {
+          musicSendersRef.current[peerId] = pc.addTrack(musicTrack, musicStream);
+        }
+      } else if (!musicTrack && musicSender) {
+        pc.removeTrack(musicSender);
+        delete musicSendersRef.current[peerId];
+      }
     });
-  }, [getActiveOutgoingStream, getActiveOutgoingTrack]);
+  }, [getActiveOutgoingStream, getActiveOutgoingTrack, isDjMode, isMusicPlaying]);
 
   // Replace the outgoing track only when playback state changes, not merely
   // when the DJ modal is opened or a playlist is loaded.
@@ -863,10 +874,31 @@ export function useIntercomAudio({
         console.log(`[WebRTC] Connection state (${userId}): ${pc.connectionState}`);
       };
 
+      pc.onnegotiationneeded = async () => {
+        if (pc.signalingState !== 'stable' || !socket) return;
+        try {
+          const offer = await pc.createOffer({ offerToReceiveAudio: true });
+          await pc.setLocalDescription(offer);
+          if (pc.localDescription) {
+            socket.emit('signal', { to: userId, signal: pc.localDescription });
+          }
+        } catch (error) {
+          console.warn(`[WebRTC] Renegosiasi audio gagal untuk ${userId}:`, error);
+        }
+      };
+
       // Receive remote audio stream (Zoom Conference Call direct playback)
       pc.ontrack = (event) => {
         console.log(`[WebRTC] Received audio track from ${userId}, track id: ${event.track.id}`);
-        const remoteStream = (event.streams && event.streams[0]) ? event.streams[0] : new MediaStream([event.track]);
+        const remoteStream =
+          remoteStreamsRef.current[userId] ||
+          ((event.streams && event.streams[0]) ? event.streams[0] : new MediaStream());
+        if (!remoteStreamsRef.current[userId]) {
+          remoteStreamsRef.current[userId] = remoteStream;
+        }
+        if (!remoteStream.getTracks().some((track) => track.id === event.track.id)) {
+          remoteStream.addTrack(event.track);
+        }
 
         let audio = audioElementsRef.current[userId];
         if (!audio) {
@@ -1062,6 +1094,8 @@ export function useIntercomAudio({
         }
         delete audioElementsRef.current[userId];
       }
+      delete remoteStreamsRef.current[userId];
+      delete musicSendersRef.current[userId];
     };
 
     socket.on('user-connected', handleUserConnected);
@@ -1163,7 +1197,12 @@ export function useIntercomAudio({
       // Cabang 1: Diarahkan ke audioContext.destination (speaker/headset HP Kapten)
       gainNode.connect(ctx.destination);
 
-      // Cabang 2: mixed stream yang dikirim melalui track WebRTC kapten.
+      // Keep a separate music track so the microphone sender is never
+      // replaced when playback starts.
+      musicDestinationRef.current = ctx.createMediaStreamDestination();
+      gainNode.connect(musicDestinationRef.current);
+
+      // Keep the legacy mixed destination available for recovery paths.
       gainNode.connect(mixedDestinationRef.current);
     }
   }, [musicVolume, showDeviceToast]);
