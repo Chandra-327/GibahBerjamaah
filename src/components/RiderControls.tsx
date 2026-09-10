@@ -143,14 +143,12 @@ export const RiderControls: React.FC<RiderControlsProps> = ({
             }}
             onPointerUp={(e) => {
               e.preventDefault();
+              if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+                e.currentTarget.releasePointerCapture(e.pointerId);
+              }
               onPttEnd();
             }}
             onPointerCancel={onPttEnd}
-            onPointerLeave={(e) => {
-              if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-                onPttEnd();
-              }
-            }}
             onContextMenu={(e) => e.preventDefault()}
             className={`flex-1 h-20 rounded-2xl border-2 flex flex-col items-center justify-center font-black text-base uppercase tracking-widest transition-all select-none shadow-2xl ${
               isTransmitting

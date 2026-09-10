@@ -95,8 +95,8 @@ export const IntercomMap: React.FC<IntercomMapProps> = ({
     return L.divIcon({
       className: 'custom-rider-icon',
       html,
-      iconSize: [0, 0],
-      iconAnchor: [0, 0],
+      iconSize: [180, 100],
+      iconAnchor: [90, 50],
     });
   };
 
@@ -235,8 +235,8 @@ export const IntercomMap: React.FC<IntercomMapProps> = ({
       const alertIcon = L.divIcon({
         className: 'alert-pin-icon',
         html: iconHtml,
-        iconSize: [0, 0],
-        iconAnchor: [0, 0],
+        iconSize: [180, 90],
+        iconAnchor: [90, 45],
       });
 
       const marker = L.marker(alert.coords, { icon: alertIcon, zIndexOffset: 800 }).addTo(map);
@@ -303,19 +303,18 @@ export const IntercomMap: React.FC<IntercomMapProps> = ({
         </button>
 
         {/* Center to My Location */}
-        {myCoords && (
-          <button
-            onClick={() => {
-              if (mapInstanceRef.current && myCoords) {
-                mapInstanceRef.current.setView(myCoords, 16, { animate: true });
-              }
-            }}
-            className="w-12 h-12 rounded-xl flex items-center justify-center bg-zinc-900/90 border border-zinc-700 text-zinc-300 hover:text-white shadow-xl transition-all active:scale-95"
-            title="Lokasi Saya"
-          >
-            <Locate className="w-6 h-6" />
-          </button>
-        )}
+        <button
+          onClick={() => {
+            if (mapInstanceRef.current && myCoords) {
+              mapInstanceRef.current.setView(myCoords, 16, { animate: true });
+            }
+          }}
+          disabled={!myCoords}
+          className="w-12 h-12 rounded-xl flex items-center justify-center bg-zinc-900/90 border border-zinc-700 text-zinc-300 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed shadow-xl transition-all active:scale-95"
+          title={myCoords ? 'Lokasi Saya' : 'Lokasi GPS belum tersedia'}
+        >
+          <Locate className="w-6 h-6" />
+        </button>
       </div>
 
       {/* Speed & Heading HUD Overlay (Top-Left) */}

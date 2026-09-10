@@ -73,8 +73,14 @@
   font-family: inherit !important;
 }
 
+/* Leaflet div icons must not inherit the default white square. */
+.custom-rider-icon,
+.alert-pin-icon {
+  background: transparent !important;
+  border: 0 !important;
+}
+
 /* Invert standard tile layer if carto dark is loading or fallback OSM */
 .dark-tiles {
   filter: brightness(0.65) invert(1) contrast(3) hue-rotate(200deg) saturate(0.3) brightness(0.7);
 }
-

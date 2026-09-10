@@ -1202,10 +1202,19 @@ export function useIntercomAudio({
 
       if (musicAudioRef.current) {
         if (track.url) {
+          if (musicObjectUrlRef.current) {
+            URL.revokeObjectURL(musicObjectUrlRef.current);
+            musicObjectUrlRef.current = null;
+          }
           musicAudioRef.current.src = track.url;
         } else if (track.file) {
-          musicAudioRef.current.src = URL.createObjectURL(track.file);
+          if (musicObjectUrlRef.current) {
+            URL.revokeObjectURL(musicObjectUrlRef.current);
+          }
+          musicObjectUrlRef.current = URL.createObjectURL(track.file);
+          musicAudioRef.current.src = musicObjectUrlRef.current;
         }
+        musicAudioRef.current.load();
         try {
           await musicAudioRef.current.play();
           setIsMusicPlaying(true);
