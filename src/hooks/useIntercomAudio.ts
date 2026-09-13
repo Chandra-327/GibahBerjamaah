@@ -1,7 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, Dispatch, SetStateAction } from 'react';
 import { Socket } from 'socket.io-client';
-import { IntercomMode, AudioConnectionStatus, MusicTrack, AudioOutputMode } from '../types';
+import { IntercomMode, AudioConnectionStatus, MusicTrack, AudioOutputMode, DJMusicState } from '../types';
 import { playIntercomChirp } from '../utils/audioKeepAlive';
+import { getBuiltInDemoTracks } from '../utils/demoMusic';
+import { DeviceInfoItem } from '../components/AudioDeviceModal';
 
 interface UseIntercomAudioOptions {
   socket: Socket | null;
@@ -10,6 +12,8 @@ interface UseIntercomAudioOptions {
   mode: IntercomMode;
   isMuted: boolean;
   anyRiderSpeaking?: boolean;
+  activeDjState?: DJMusicState | null;
+  setActiveDjState?: Dispatch<SetStateAction<DJMusicState | null>>;
 }
 
 export function useIntercomAudio({
@@ -19,6 +23,8 @@ export function useIntercomAudio({
   mode,
   isMuted,
   anyRiderSpeaking = false,
+  activeDjState = null,
+  setActiveDjState,
 }: UseIntercomAudioOptions) {
   const [audioStatus, setAudioStatus] = useState<AudioConnectionStatus>('disconnected');
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -26,14 +32,20 @@ export function useIntercomAudio({
   const [isMySpeaking, setIsMySpeaking] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Audio Output Routing (Speakerphone vs Headset)
-  const [audioOutputMode, setAudioOutputMode] = useState<AudioOutputMode>('speaker');
-  const activeSinkIdRef = useRef<string>('');
+  // Audio Output Mode (Dipertahankan untuk backward compatibility)
+  const [audioOutputMode] = useState<AudioOutputMode>('headset');
 
-  // Audio Device Change & Disconnect Toast with Auto-Dismiss
+  // Multi-Device & Hardware Routing State
+  const [inputDevices, setInputDevices] = useState<DeviceInfoItem[]>([]);
+  const [outputDevices, setOutputDevices] = useState<DeviceInfoItem[]>([]);
+  const [selectedInputId, setSelectedInputId] = useState<string>(''); // '' = Auto / Utamakan Bluetooth
+  const [selectedOutputId, setSelectedOutputId] = useState<string>(''); // '' = Auto / Sistem
+  const [activeDeviceLabel, setActiveDeviceLabel] = useState<string>('Mendeteksi perangkat...');
+  const [isFixingAudio, setIsFixingAudio] = useState<boolean>(false);
+
+  // Audio Device Toast with Auto-Dismiss
   const [deviceToastMessage, setDeviceToastMessage] = useState<string | null>(null);
   const toastTimeoutRef = useRef<number | null>(null);
-  const previousOutputsRef = useRef<number | null>(null);
 
   const showDeviceToast = useCallback((msg: string) => {
     setDeviceToastMessage(msg);
@@ -49,9 +61,19 @@ export function useIntercomAudio({
   const [isDjMode, setIsDjMode] = useState(false);
   const [musicTrackTitle, setMusicTrackTitle] = useState<string>('');
   const [isMusicPlaying, setIsMusicPlaying] = useState(false);
-  const [musicVolume, setMusicVolume] = useState<number>(0.8); // 0.0 - 1.0 (Kapten)
-  const [receiverVolume, setReceiverVolume] = useState<number>(1.0); // 0.0 - 1.0 (Remote intercom)
-  const [isDucked, setIsDucked] = useState(false);
+  const [musicVolume, setMusicVolume] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('gibah_music_volume');
+      if (saved !== null) {
+        const parsed = parseFloat(saved);
+        if (!isNaN(parsed) && parsed >= 0 && parsed <= 1) return parsed;
+      }
+    } catch {}
+    return 0.85; // Default 85% volume musik optimal untuk helm
+  });
+  const [receiverVolume, setReceiverVolume] = useState<number>(1.35); // 0.0 - 2.5 (Remote intercom volume, default 135% boost)
+  const [micBoost, setMicBoost] = useState<number>(1.0); // 0.5 - 1.5 (Default 1.0 / 100% clean standard preamp)
+  const [isDucked] = useState(false);
 
   // Playlist State
   const [playlist, setPlaylist] = useState<MusicTrack[]>([]);
@@ -62,28 +84,110 @@ export function useIntercomAudio({
   // References
   const peersRef = useRef<Record<string, RTCPeerConnection>>({});
   const audioElementsRef = useRef<Record<string, HTMLAudioElement>>({});
+  const remoteGainNodesRef = useRef<Record<string, GainNode>>({});
+  const remoteSourceNodesRef = useRef<Record<string, MediaStreamAudioSourceNode>>({});
+  const remoteMasterLimiterRef = useRef<DynamicsCompressorNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const vadIntervalRef = useRef<number | null>(null);
   const isSpeakingStateRef = useRef(false);
   const localStreamRef = useRef<MediaStream | null>(null);
   const micSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const isDeviceChangingRef = useRef(false);
+  const isSwitchingAudioRef = useRef(false);
+  const deviceChangeDebounceRef = useRef<number | null>(null);
 
-  // DJ Nodes
+  // DJ Nodes & Compressor
   const musicAudioRef = useRef<HTMLAudioElement | null>(null);
   const musicSourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
   const musicGainNodeRef = useRef<GainNode | null>(null);
+  const musicMixedGainNodeRef = useRef<GainNode | null>(null);
+  const musicPocketFilterRef = useRef<BiquadFilterNode | null>(null);
   const micGainNodeRef = useRef<GainNode | null>(null);
+  const micPreampGainNodeRef = useRef<GainNode | null>(null);
+  const micHighPassFilterRef = useRef<BiquadFilterNode | null>(null);
+  const micPresenceFilterRef = useRef<BiquadFilterNode | null>(null);
+  const vocalCompressorNodeRef = useRef<DynamicsCompressorNode | null>(null);
+  const masterBroadcastLimiterRef = useRef<DynamicsCompressorNode | null>(null);
+  const mixedMasterBusRef = useRef<GainNode | null>(null);
+  const makeupGainNodeRef = useRef<GainNode | null>(null);
   const mixedDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const keepAliveNodeRef = useRef<{ osc: OscillatorNode; gain: GainNode } | null>(null);
 
   // Auto-next track ref
   const playNextTrackRef = useRef<(() => Promise<void>) | null>(null);
 
+  // Audio Playback Tracking Refs for Resilient Auto-Resume
+  const isMusicPlayingRef = useRef(isMusicPlaying);
+  useEffect(() => {
+    isMusicPlayingRef.current = isMusicPlaying;
+  }, [isMusicPlaying]);
+
+  const musicTrackTitleRef = useRef(musicTrackTitle);
+  useEffect(() => {
+    musicTrackTitleRef.current = musicTrackTitle;
+  }, [musicTrackTitle]);
+
+  // Exclusive Single-DJ Status Calculation (Resilient against socket reconnects)
+  const isDjOwner = Boolean(
+    activeDjState?.isDjActive &&
+    ((activeDjState.activeDjId && socket?.id && activeDjState.activeDjId === socket.id) ||
+      (activeDjState.activeDjName && myCallsign && activeDjState.activeDjName.trim().toLowerCase() === myCallsign.trim().toLowerCase()))
+  );
+  const isDjLockedByOther = Boolean(
+    activeDjState?.isDjActive &&
+    !isDjOwner
+  );
+
+  // Auto-synchronize local DJ state with server broadcast (Resilient against signal drops)
+  useEffect(() => {
+    if (activeDjState) {
+      const isMe = Boolean(
+        (activeDjState.activeDjId && socket?.id && activeDjState.activeDjId === socket.id) ||
+        (activeDjState.activeDjName && myCallsign && activeDjState.activeDjName.trim().toLowerCase() === myCallsign.trim().toLowerCase())
+      );
+
+      if (activeDjState.isDjActive && isMe) {
+        setIsDjMode(true);
+        // Jika socket ID baru setelah reconnect saat sinyal pulih, update klaim ke server
+        if (socket?.connected && activeDjState.activeDjId !== socket.id) {
+          socket.emit('claim-dj');
+        }
+      } else if (activeDjState.isDjActive && !isMe) {
+        // Rider lain yang sah telah mengambil alih kursi DJ
+        setIsDjMode(false);
+        if (isMusicPlaying) {
+          isMusicPlayingRef.current = false;
+          if (musicAudioRef.current) {
+            musicAudioRef.current.pause();
+            musicAudioRef.current.currentTime = 0;
+          }
+          setIsMusicPlaying(false);
+        }
+      } else if (!activeDjState.isDjActive) {
+        // Status DJ di server non-aktif (misal karena reset atau sinyal putus sementara)
+        // JANGAN matikan musik lokal jika perangkat ini sedang aktif memutar musik!
+        if (!isMusicPlayingRef.current) {
+          setIsDjMode(false);
+        } else if (socket?.connected) {
+          // Otomatis pulihkan status DJ jika musik lokal masih berputar
+          console.log('[DJ] Memulihkan klaim DJ saat sinyal/server pulih...');
+          socket.emit('claim-dj');
+          socket.emit('dj-music-state', {
+            isPlaying: true,
+            trackTitle: musicTrackTitleRef.current,
+          });
+        }
+      }
+    }
+  }, [activeDjState, socket?.id, socket, myCallsign, isMusicPlaying]);
+
   // Queued ICE candidates to prevent InvalidStateError before setRemoteDescription
   const queuedCandidatesRef = useRef<Record<string, RTCIceCandidateInit[]>>({});
+  const makingOfferRef = useRef<Record<string, boolean>>({});
+  const [connectedPeersCount, setConnectedPeersCount] = useState<number>(0);
+  const knownRoomUsersRef = useRef<string[]>([]);
 
-  // ICE Servers (Google Public STUN with multiple fallbacks)
+  // ICE Servers (High-Availability Google, Cloudflare, Twilio STUN + OpenRelay TURN for Mobile 4G/5G/CGNAT)
   const iceServers: RTCConfiguration = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
@@ -91,682 +195,831 @@ export function useIntercomAudio({
       { urls: 'stun:stun2.l.google.com:19302' },
       { urls: 'stun:stun3.l.google.com:19302' },
       { urls: 'stun:stun4.l.google.com:19302' },
+      { urls: 'stun:stun.cloudflare.com:3478' },
+      { urls: 'stun:global.stun.twilio.com:3478' },
+      { urls: 'stun:openrelay.metered.ca:80' },
+      {
+        urls: [
+          'turn:openrelay.metered.ca:80',
+          'turn:openrelay.metered.ca:443',
+          'turn:openrelay.metered.ca:443?transport=tcp',
+          'turns:openrelay.metered.ca:443?transport=tcp',
+        ],
+        username: 'openrelay',
+        credential: 'openrelay',
+      },
     ],
     iceCandidatePoolSize: 10,
+    iceTransportPolicy: 'all',
+    bundlePolicy: 'max-bundle',
+    rtcpMuxPolicy: 'require',
   };
 
-  // Adaptive Multi-Tier Audio Constraints (Universal untuk Semua HP Xiaomi, Samsung, Oppo, STB, & Ragam Headset/Interkom Helm)
-  const acquireUniversalStream = useCallback(async (): Promise<MediaStream> => {
-    // Cari apakah ada mikrofon Bluetooth/headset yang terdeteksi
-    let bluetoothDeviceId: string | undefined;
-    try {
-      if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const bt = devices.find(
-          (d) =>
-            d.kind === 'audioinput' &&
-            (d.label.toLowerCase().includes('bluetooth') ||
-              d.label.toLowerCase().includes('headset') ||
-              d.label.toLowerCase().includes('wireless') ||
-              d.label.toLowerCase().includes('earpiece'))
-        );
-        if (bt && bt.deviceId) {
-          bluetoothDeviceId = bt.deviceId;
-          console.log('[Audio Device] Mengutamakan input Bluetooth headset:', bt.label);
-        }
-      }
-    } catch {}
+  // Helper untuk memeriksa apakah sebuah label merupakan Bluetooth / Headset Helm / Wired External
+  const isBluetoothOrHeadset = (label: string): boolean => {
+    const l = (label || '').toLowerCase();
+    return (
+      l.includes('bluetooth') ||
+      l.includes('headset') ||
+      l.includes('wireless') ||
+      l.includes('handsfree') ||
+      l.includes('airpods') ||
+      l.includes('buds') ||
+      l.includes('tws') ||
+      l.includes('earpiece') ||
+      l.includes('sena') ||
+      l.includes('cardo') ||
+      l.includes('ejeas') ||
+      l.includes('freedconn') ||
+      l.includes('intercom') ||
+      l.includes('wired') ||
+      l.includes('headphone') ||
+      l.includes('earphone') ||
+      l.includes('usb') ||
+      l.includes('type-c')
+    );
+  };
 
-    // Tier 1: Preferensi interkom lengkap (echo cancellation, noise suppression, auto gain)
-    try {
-      const s1 = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          deviceId: bluetoothDeviceId ? { ideal: bluetoothDeviceId } : undefined,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-        video: false,
-      });
-      console.log('[Audio Device] Berhasil memperoleh stream Tier-1 (Full AEC/NS/AGC)');
-      return s1;
-    } catch (err1: unknown) {
-      console.warn('[Audio Device] Tier-1 ditolak oleh hardware/driver (mungkin Bluetooth SCO mono):', err1);
+  // Helper untuk mendapatkan singleton AudioContext yang stabil
+  const getAudioContext = useCallback((): AudioContext => {
+    if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      audioContextRef.current = new AudioCtx({ latencyHint: 'interactive' });
     }
-
-    // Tier 2: Relaksasi constraints (hanya echo cancellation dasar)
-    try {
-      const s2 = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          deviceId: bluetoothDeviceId ? { ideal: bluetoothDeviceId } : undefined,
-          echoCancellation: true,
-        },
-        video: false,
-      });
-      console.log('[Audio Device] Berhasil memperoleh stream Tier-2 (Echo Cancellation saja)');
-      return s2;
-    } catch (err2: unknown) {
-      console.warn('[Audio Device] Tier-2 ditolak:', err2);
-    }
-
-    // Tier 3: Universal Fail-Safe (100% Kompatibel dengan semua HP Android/Xiaomi, iOS, STB, & semua headset Bluetooth helm)
-    try {
-      const s3 = await navigator.mediaDevices.getUserMedia({
-        audio: bluetoothDeviceId ? { deviceId: { ideal: bluetoothDeviceId } } : true,
-        video: false,
-      });
-      console.log('[Audio Device] Berhasil memperoleh stream Tier-3 (Universal Raw Audio)');
-      return s3;
-    } catch (err3: unknown) {
-      console.error('[Audio Device] Semua tier getUserMedia gagal:', err3);
-      throw err3;
-    }
+    return audioContextRef.current;
   }, []);
 
-  // Helper: Resume AudioContext (Handling background / phone call interruptions)
+  // Resume AudioContext jika tertidur oleh kebijakan browser mobile saat pergantian device
   const resumeAudioContext = useCallback(async () => {
+    try {
+      const ctx = getAudioContext();
+      if (ctx.state === 'suspended' || ctx.state === ('interrupted' as AudioContextState)) {
+        await ctx.resume();
+        console.log('[AudioContext] Resumed successfully. State:', ctx.state);
+      }
+    } catch (e) {
+      console.warn('[AudioContext] Resume error:', e);
+    }
+  }, [getAudioContext]);
+
+  // Unpause semua remote audio elements & pastikan WebAudio berjalan
+  const unpauseAllRemoteAudios = useCallback(() => {
+    (Object.values(audioElementsRef.current) as HTMLAudioElement[]).forEach((audio) => {
+      if (audio && audio.srcObject) {
+        audio.muted = false;
+        if (audio.paused) {
+          audio.play().catch(() => {});
+        }
+      }
+    });
     if (
       audioContextRef.current &&
       (audioContextRef.current.state === 'suspended' ||
-        (audioContextRef.current.state as string) === 'interrupted')
+        audioContextRef.current.state === ('interrupted' as AudioContextState))
     ) {
-      try {
-        await audioContextRef.current.resume();
-        console.log('[Audio Focus] AudioContext resumed, state:', audioContextRef.current.state);
-      } catch (err) {
-        console.warn('[Audio Focus] AudioContext resume failed:', err);
-      }
+      audioContextRef.current.resume().catch(() => {});
     }
   }, []);
 
-  // Resilient Audio Engine Flags & Timers
-  const isSwitchingAudioRef = useRef(false);
-  const lastAudioSwitchTimeRef = useRef(0);
-  const audioReloadDebounceTimerRef = useRef<number | null>(null);
-
-  // Sound cue penanda audio ke helm bahwa mic telah pulih (Beep 800Hz 0.15s)
-  const playRecoveryBeep = useCallback(() => {
-    try {
-      const AudioCtxClass =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (!AudioCtxClass) return;
-      const ctx =
-        audioContextRef.current && audioContextRef.current.state !== 'closed'
-          ? audioContextRef.current
-          : new AudioCtxClass();
-      if (ctx.state === 'suspended' || (ctx.state as string) === 'interrupted') {
-        ctx.resume().catch(() => {});
-      }
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(800, ctx.currentTime);
-      gain.gain.setValueAtTime(0.2, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(ctx.currentTime);
-      osc.stop(ctx.currentTime + 0.15);
-    } catch (err) {
-      console.warn('[Audio Recovery] Sound cue beep error:', err);
-    }
-  }, []);
-
-  // Helper: Memastikan pipeline WebAudio (Mic + VAD + DJ Destination) selalu terhubung
-  const ensureAudioPipeline = useCallback(
-    (stream: MediaStream) => {
-      try {
-        const AudioContextClass =
-          window.AudioContext ||
-          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-        if (!AudioContextClass) return;
-
-        if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
-          audioContextRef.current = new AudioContextClass();
-          audioContextRef.current.onstatechange = () => {
-            console.log(`[Audio Focus] audioCtx state: ${audioContextRef.current?.state}`);
-            if (
-              (audioContextRef.current?.state === 'suspended' ||
-                (audioContextRef.current?.state as string) === 'interrupted') &&
-              document.visibilityState === 'visible'
-            ) {
-              audioContextRef.current?.resume().catch(console.warn);
-            }
-          };
+  // Terapkan Sink ID output (Speaker/Bluetooth) ke seluruh audio element jika browser mendukung
+  const applyAudioSinkId = useCallback(
+    async (targetSinkId?: string) => {
+      const sink = targetSinkId !== undefined ? targetSinkId : selectedOutputId;
+      for (const audio of Object.values(audioElementsRef.current)) {
+        if (audio && 'setSinkId' in (audio as Record<string, unknown>)) {
+          try {
+            await (audio as unknown as { setSinkId: (id: string) => Promise<void> }).setSinkId(sink);
+          } catch (e) {
+            console.warn('[Audio Sink] SetSinkId element note:', e);
+          }
         }
-        const ctx = audioContextRef.current;
+      }
+      if (musicAudioRef.current && 'setSinkId' in (musicAudioRef.current as Record<string, unknown>)) {
+        try {
+          await (musicAudioRef.current as unknown as { setSinkId: (id: string) => Promise<void> }).setSinkId(sink);
+        } catch (e) {
+          console.warn('[Audio Sink] SetSinkId DJ music note:', e);
+        }
+      }
+      if (audioContextRef.current && 'setSinkId' in (audioContextRef.current as Record<string, unknown>)) {
+        try {
+          await (audioContextRef.current as unknown as { setSinkId: (id: string) => Promise<void> }).setSinkId(sink);
+        } catch (e) {
+          console.warn('[Audio Sink] SetSinkId AudioContext note:', e);
+        }
+      }
+    },
+    [selectedOutputId]
+  );
 
+  // Enumerate & Refresh Available Devices List
+  const refreshAudioDevices = useCallback(async () => {
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+      const devices = await navigator.mediaDevices.enumerateDevices();
+
+      const inputs: DeviceInfoItem[] = [];
+      const outputs: DeviceInfoItem[] = [];
+
+      devices.forEach((d) => {
+        const isBt = isBluetoothOrHeadset(d.label);
+        if (d.kind === 'audioinput') {
+          inputs.push({
+            deviceId: d.deviceId,
+            label: d.label || `Mikrofon ${inputs.length + 1}`,
+            kind: 'audioinput',
+            isBluetooth: isBt,
+          });
+        } else if (d.kind === 'audiooutput') {
+          outputs.push({
+            deviceId: d.deviceId,
+            label: d.label || `Speaker ${outputs.length + 1}`,
+            kind: 'audiooutput',
+            isBluetooth: isBt,
+          });
+        }
+      });
+
+      setInputDevices(inputs);
+      setOutputDevices(outputs);
+
+      const activeTrack = localStreamRef.current?.getAudioTracks()[0];
+      if (activeTrack && activeTrack.label) {
+        setActiveDeviceLabel(activeTrack.label);
+      } else {
+        const btInput = inputs.find((i) => i.isBluetooth);
+        if (btInput) {
+          setActiveDeviceLabel(`🎧 ${btInput.label}`);
+        } else if (inputs.length > 0) {
+          setActiveDeviceLabel(`📱 ${inputs[0].label || 'Mikrofon Bawaan HP'}`);
+        } else {
+          setActiveDeviceLabel('Audio Otomatis');
+        }
+      }
+    } catch (e) {
+      console.warn('[Audio Devices] Enumerate error:', e);
+    }
+  }, []);
+
+  // Adaptive Multi-Tier Audio Constraints dengan Fallback Khusus Berbagai Merek HP
+  const acquireUniversalStream = useCallback(
+    async (targetDeviceId?: string): Promise<MediaStream> => {
+      let preferredDeviceId = targetDeviceId || (selectedInputId !== '' ? selectedInputId : undefined);
+
+      if (!preferredDeviceId) {
+        try {
+          if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const bt = devices.find((d) => d.kind === 'audioinput' && isBluetoothOrHeadset(d.label));
+            if (bt && bt.deviceId) {
+              preferredDeviceId = bt.deviceId;
+              console.log('[Audio Device] Memprioritaskan Bluetooth/Headset Helm:', bt.label);
+            }
+          }
+        } catch {}
+      }
+
+      let stream: MediaStream | null = null;
+
+      // Tier 1: Preferensi interkom jernih (Echo Cancellation + Noise Suppression, Tanpa AGC yang mengecilkan volume)
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            deviceId: preferredDeviceId ? { ideal: preferredDeviceId } : undefined,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: false, // CRITICAL: Mencegah volume mengecil sendiri
+          },
+          video: false,
+        });
+        console.log('[Audio Device] Berhasil memperoleh stream Tier-1 (AEC & NS Aktif, AGC Off)');
+      } catch (err1: unknown) {
+        console.warn('[Audio Device] Tier-1 ditolak oleh hardware/driver:', err1);
+      }
+
+      // Tier 2: Standard Echo Cancellation
+      if (!stream) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              deviceId: preferredDeviceId ? { ideal: preferredDeviceId } : undefined,
+              echoCancellation: true,
+              autoGainControl: false,
+            },
+            video: false,
+          });
+          console.log('[Audio Device] Berhasil memperoleh stream Tier-2');
+        } catch (err2: unknown) {
+          console.warn('[Audio Device] Tier-2 ditolak:', err2);
+        }
+      }
+
+      // Tier 3: Universal Fallback (Raw Audio)
+      if (!stream) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: preferredDeviceId ? { deviceId: { ideal: preferredDeviceId } } : true,
+            video: false,
+          });
+          console.log('[Audio Device] Berhasil memperoleh stream Tier-3 (Raw Audio)');
+        } catch (err3: unknown) {
+          console.error('[Audio Device] Semua konfigurasi audio ditolak:', err3);
+          throw err3;
+        }
+      }
+
+      // Pasang Event Listeners ke Track agar deteksi jika OS mematikan/mute track secara sepihak
+      const track = stream.getAudioTracks()[0];
+      if (track) {
+        setActiveDeviceLabel(track.label || 'Mikrofon Aktif');
+
+        track.onended = () => {
+          console.warn('[Audio Track] Track mic ended (terputus oleh OS/driver), auto-recovering...');
+          setTimeout(() => {
+            if (!isSwitchingAudioRef.current) {
+              restartAudioStream();
+            }
+          }, 300);
+        };
+
+        track.onmute = () => {
+          console.warn('[Audio Track] Track mic dimute oleh OS (hardware route transition)...');
+          resumeAudioContext();
+        };
+
+        track.onunmute = () => {
+          console.log('[Audio Track] Track mic unmuted oleh OS.');
+          resumeAudioContext();
+          unpauseAllRemoteAudios();
+        };
+      }
+
+      return stream;
+    },
+    [selectedInputId, resumeAudioContext, unpauseAllRemoteAudios]
+  );
+
+  // Update Mic Gain Node (On/Off)
+  const updateMicGain = useCallback((enabled: boolean) => {
+    if (micGainNodeRef.current && audioContextRef.current) {
+      try {
+        micGainNodeRef.current.gain.setValueAtTime(
+          enabled ? 1.0 : 0.0,
+          audioContextRef.current.currentTime
+        );
+      } catch {}
+    }
+  }, []);
+
+  // Setup Master Audio Graph (Preamp Voice Booster + Intelligibility EQ + Continuous DJ Mixing Engine)
+  const ensureAudioPipeline = useCallback(
+    (stream?: MediaStream) => {
+      try {
+        const ctx = getAudioContext();
+        if (
+          ctx.state === 'suspended' ||
+          ctx.state === ('interrupted' as AudioContextState)
+        ) {
+          ctx.resume().catch(() => {});
+        }
+
+        // 1. Destination permanen untuk WebRTC broadcast stream (Vokal + Musik)
         if (!mixedDestinationRef.current) {
           mixedDestinationRef.current = ctx.createMediaStreamDestination();
         }
 
-        if (!micGainNodeRef.current) {
-          micGainNodeRef.current = ctx.createGain();
-          micGainNodeRef.current.connect(mixedDestinationRef.current);
+        // 2. Master Broadcast Mix Bus & Master Limiter (Transparan & Anti-Pumping)
+        if (!mixedMasterBusRef.current) {
+          const bus = ctx.createGain();
+          bus.gain.setValueAtTime(1.0, ctx.currentTime);
+          mixedMasterBusRef.current = bus;
         }
 
-        if (micSourceNodeRef.current) {
+        if (!masterBroadcastLimiterRef.current) {
+          const lim = ctx.createDynamicsCompressor();
+          lim.threshold.setValueAtTime(-2.5, ctx.currentTime);
+          lim.knee.setValueAtTime(6, ctx.currentTime);
+          lim.ratio.setValueAtTime(3.0, ctx.currentTime);
+          lim.attack.setValueAtTime(0.005, ctx.currentTime);
+          lim.release.setValueAtTime(0.20, ctx.currentTime);
+          masterBroadcastLimiterRef.current = lim;
+        }
+
+        // 3. Post-Limiter Makeup Gain ke WebRTC broadcast destination
+        if (!makeupGainNodeRef.current) {
+          const makeup = ctx.createGain();
+          makeup.gain.setValueAtTime(1.0, ctx.currentTime);
+          makeup.connect(mixedDestinationRef.current);
+          makeupGainNodeRef.current = makeup;
+
+          if (mixedMasterBusRef.current && masterBroadcastLimiterRef.current) {
+            mixedMasterBusRef.current.connect(masterBroadcastLimiterRef.current);
+            masterBroadcastLimiterRef.current.connect(makeup);
+          }
+        }
+
+        // 4. Sub-audible Keep-alive Clock (40Hz @ 0.00001 gain) HANYA ke mixedDestination
+        if (!keepAliveNodeRef.current) {
           try {
-            micSourceNodeRef.current.disconnect();
-          } catch {}
-        }
-
-        const micSource = ctx.createMediaStreamSource(stream);
-        micSourceNodeRef.current = micSource;
-        micSource.connect(micGainNodeRef.current);
-
-        if (!analyserRef.current) {
-          const analyserNode = ctx.createAnalyser();
-          analyserNode.fftSize = 256;
-          analyserNode.smoothingTimeConstant = 0.4;
-          analyserRef.current = analyserNode;
-        }
-        micSource.connect(analyserRef.current);
-
-        // Sambungkan DJ Musik jika ada
-        if (musicGainNodeRef.current) {
-          try {
-            musicGainNodeRef.current.disconnect();
-          } catch {}
-          musicGainNodeRef.current.connect(ctx.destination);
-          if (mixedDestinationRef.current) {
-            musicGainNodeRef.current.connect(mixedDestinationRef.current);
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(40, ctx.currentTime);
+            gain.gain.setValueAtTime(0.00001, ctx.currentTime);
+            osc.connect(gain);
+            gain.connect(mixedDestinationRef.current);
+            osc.start();
+            keepAliveNodeRef.current = { osc, gain };
+          } catch (e) {
+            console.warn('[KeepAlive] Clock node note:', e);
           }
         }
 
-        // Jalankan VAD meter interval
-        if (!vadIntervalRef.current && analyserRef.current) {
-          const buffer = new Uint8Array(analyserRef.current.frequencyBinCount);
-          vadIntervalRef.current = window.setInterval(() => {
-            if (!localStreamRef.current?.getAudioTracks()[0]?.enabled) {
-              if (isSpeakingStateRef.current) {
-                isSpeakingStateRef.current = false;
-                setIsMySpeaking(false);
-                socket?.emit('voice-state', { isSpeaking: false });
-              }
-              return;
-            }
-
-            if (analyserRef.current) {
-              analyserRef.current.getByteFrequencyData(buffer);
-              let sum = 0;
-              for (let i = 0; i < buffer.length; i++) sum += buffer[i];
-              const avg = sum / buffer.length;
-
-              if (avg > 25 && !isSpeakingStateRef.current) {
-                isSpeakingStateRef.current = true;
-                setIsMySpeaking(true);
-                socket?.emit('voice-state', { isSpeaking: true });
-              } else if (avg <= 25 && isSpeakingStateRef.current) {
-                isSpeakingStateRef.current = false;
-                setIsMySpeaking(false);
-                socket?.emit('voice-state', { isSpeaking: false });
-              }
-            }
-          }, 100);
-        }
-      } catch (err) {
-        console.warn('[Audio Pipeline] Error setup pipeline:', err);
-      }
-    },
-    [socket]
-  );
-
-  // Debounced Auto-Reload Audio Stream (Jeda 1500 ms agar driver/HAL kernel selesai berpindah)
-  const triggerDebouncedAudioReload = useCallback((msg = 'Jalur audio disesuaikan') => {
-    if (msg) showDeviceToast(msg);
-    if (audioReloadDebounceTimerRef.current) {
-      window.clearTimeout(audioReloadDebounceTimerRef.current);
-    }
-    audioReloadDebounceTimerRef.current = window.setTimeout(() => {
-      restartAudioStream();
-    }, 1500);
-  }, [showDeviceToast]);
-
-  // Sistem Audio Recovery Terpusat (restartAudioStream - Resilient Non-Destructive Soft-Reload)
-  const restartAudioStream = useCallback(async () => {
-    if (isSwitchingAudioRef.current) {
-      console.log('[Audio Recovery] Pemulihan audio sedang berjalan, mengabaikan panggilan duplikat.');
-      return localStreamRef.current;
-    }
-    isSwitchingAudioRef.current = true;
-    lastAudioSwitchTimeRef.current = Date.now();
-    console.log('[Audio Recovery] Memulai soft-reload audio & re-binding Bluetooth...');
-
-    // 1. Bersihkan track lama dan disconnect node terlebih dahulu agar driver Xiaomi/Android
-    // melepaskan lock hardware internal mic dan dapat mengalihkan fokus ke headset Bluetooth (SCO)
-    const oldStream = localStreamRef.current;
-    if (oldStream) {
-      oldStream.getTracks().forEach((t) => {
-        try {
-          t.onended = null;
-          t.onmute = null;
-          t.onunmute = null;
-          t.stop();
-        } catch (e) {
-          console.warn('[Audio Recovery] Release track warning:', e);
-        }
-      });
-    }
-
-    if (micSourceNodeRef.current) {
-      try {
-        micSourceNodeRef.current.disconnect();
-      } catch {}
-      micSourceNodeRef.current = null;
-    }
-
-    // Beri jeda 250ms agar AudioRecord HAL Android/MIUI selesai melepaskan mutex
-    await new Promise((resolve) => setTimeout(resolve, 250));
-
-    let newStream: MediaStream | null = null;
-    const maxRetries = 2;
-
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      try {
-        newStream = await acquireUniversalStream();
-        if (newStream && newStream.getAudioTracks().length > 0) break;
-      } catch (err) {
-        console.warn(`[Audio Recovery] getUserMedia percobaan ke-${attempt + 1} belum berhasil:`, err);
-        if (attempt < maxRetries) {
-          await new Promise((resolve) => setTimeout(resolve, 800));
-        }
-      }
-    }
-
-    if (!newStream || newStream.getAudioTracks().length === 0) {
-      console.error('[Audio Recovery] Gagal memulihkan audio stream. Mempertahankan status.');
-      showDeviceToast('⚠️ Mic gagal dimuat. Cek izin browser.');
-      isSwitchingAudioRef.current = false;
-      return localStreamRef.current;
-    }
-
-    try {
-      localStreamRef.current = newStream;
-      setLocalStream(newStream);
-      const newTrack = newStream.getAudioTracks()[0];
-
-      // Sesuaikan status aktif mikrofon berdasarkan mode
-      if (mode === 'ALWAYS_ON') {
-        newTrack.enabled = !isMuted;
-      } else {
-        newTrack.enabled = isTransmitting && !isMuted;
-      }
-
-      // Pastikan pipeline WebAudio terhubung ke stream baru
-      ensureAudioPipeline(newStream);
-
-      // Tentukan active track keluar (mic atau campuran DJ)
-      const activeTrack =
-        isDjMode && mixedDestinationRef.current
-          ? mixedDestinationRef.current.stream.getAudioTracks()[0]
-          : newTrack;
-      const streamToPass =
-        isDjMode && mixedDestinationRef.current
-          ? mixedDestinationRef.current.stream
-          : newStream;
-
-      // Sinkronkan track baru ke semua WebRTC peer connections
-      (Object.values(peersRef.current) as RTCPeerConnection[]).forEach((pc) => {
-        try {
-          const senders = pc.getSenders();
-          let audioSender = senders.find((s) => s.track && s.track.kind === 'audio');
-          if (!audioSender) {
-            audioSender = senders.find((s) => !s.track);
-          }
-          if (audioSender && activeTrack) {
-            audioSender.replaceTrack(activeTrack).catch((err) => {
-              console.warn('[WebRTC] replaceTrack warning:', err);
-            });
-          } else if (streamToPass && activeTrack) {
-            pc.addTrack(activeTrack, streamToPass);
-          }
-        } catch (e) {
-          console.warn('[WebRTC] sync peer track warning:', e);
-        }
-      });
-
-      // Tangani event onmute & onunmute bawaan OS Xiaomi/Android (misal: jeda fokus notifikasi/panggilan)
-      newTrack.onmute = () => {
-        console.warn('[Audio Track] Mic di-mute sementara oleh OS (notifikasi/panggilan/fokus)');
-      };
-      newTrack.onunmute = () => {
-        console.log('[Audio Track] Mic di-unmute oleh OS, memulihkan status mic');
-        newTrack.enabled = mode === 'ALWAYS_ON' ? !isMuted : (isTransmitting && !isMuted);
-        resumeAudioContext();
-      };
-
-      // Tangani event track berakhir (misal: headset bluetooth dimatikan / putus)
-      newTrack.onended = () => {
-        if (!isSwitchingAudioRef.current && Date.now() - lastAudioSwitchTimeRef.current > 4000) {
-          console.log('[Audio Recovery] Track audio berakhir (hardware off), trigger soft-reload...');
-          triggerDebouncedAudioReload('Jalur audio disesuaikan');
-        }
-      };
-
-      // PENTING: Bangunkan dan un-pause semua elemen audio penerima rider lain yang mungkin ter-pause oleh OS
-      for (const [peerId, audio] of Object.entries(audioElementsRef.current) as [string, HTMLAudioElement][]) {
-        if (audio) {
-          audio.muted = false;
-          audio.volume = receiverVolume;
-          if ('setSinkId' in HTMLMediaElement.prototype && typeof (audio as any).setSinkId === 'function') {
+        // 5. Inisialisasi Jalur Mikrofon Rider (Preamp Booster + Low-cut 130Hz + Vocal Presence 2800Hz + Vocal Compressor)
+        const micStream = stream || localStreamRef.current;
+        if (micStream && micStream.getAudioTracks().length > 0) {
+          if (micSourceNodeRef.current) {
             try {
-              await (audio as any).setSinkId(activeSinkIdRef.current || '');
-            } catch (e) {
-              console.warn(`[Audio Recovery] setSinkId for ${peerId}:`, e);
+              micSourceNodeRef.current.disconnect();
+            } catch {}
+          }
+
+          const micSource = ctx.createMediaStreamSource(micStream);
+          micSourceNodeRef.current = micSource;
+
+          // High-Pass Filter (160Hz): Memotong gemuruh knalpot, getaran mesin motor, & turbulensi angin helm
+          if (!micHighPassFilterRef.current) {
+            const hp = ctx.createBiquadFilter();
+            hp.type = 'highpass';
+            hp.frequency.setValueAtTime(160, ctx.currentTime);
+            hp.Q.setValueAtTime(0.7, ctx.currentTime);
+            micHighPassFilterRef.current = hp;
+          }
+
+          // Presence Filter (2600Hz, +2.5dB): Memperjelas artikulasi vokal konsonan tanpa mengangkat desis angin
+          if (!micPresenceFilterRef.current) {
+            const eq = ctx.createBiquadFilter();
+            eq.type = 'peaking';
+            eq.frequency.setValueAtTime(2600, ctx.currentTime);
+            eq.gain.setValueAtTime(2.5, ctx.currentTime);
+            eq.Q.setValueAtTime(1.0, ctx.currentTime);
+            micPresenceFilterRef.current = eq;
+          }
+
+          // Preamp Booster Gain: Rentang 50% - 150% (0.5x - 1.5x)
+          if (!micPreampGainNodeRef.current) {
+            const pre = ctx.createGain();
+            const effectiveGain = Math.max(0.5, Math.min(1.5, micBoost));
+            pre.gain.setValueAtTime(effectiveGain, ctx.currentTime);
+            micPreampGainNodeRef.current = pre;
+          }
+
+          // Mic Gate Gain (1.0 = aktif bicara, 0.0 = senyap/mute)
+          if (!micGainNodeRef.current) {
+            const gate = ctx.createGain();
+            micGainNodeRef.current = gate;
+          }
+
+          const shouldBeLive = mode === 'ALWAYS_ON' ? !isMuted : isTransmitting && !isMuted;
+          micGainNodeRef.current.gain.setValueAtTime(shouldBeLive ? 1.0 : 0.0, ctx.currentTime);
+
+          // Dedicated Vocal Compressor (Meratakan suara vokal agar konsisten & tidak terdistorsi)
+          if (!vocalCompressorNodeRef.current) {
+            const comp = ctx.createDynamicsCompressor();
+            comp.threshold.setValueAtTime(-22, ctx.currentTime);
+            comp.knee.setValueAtTime(6, ctx.currentTime);
+            comp.ratio.setValueAtTime(3.0, ctx.currentTime);
+            comp.attack.setValueAtTime(0.005, ctx.currentTime);
+            comp.release.setValueAtTime(0.15, ctx.currentTime);
+            vocalCompressorNodeRef.current = comp;
+          }
+
+          // Hubungkan rantai vokal: Source -> HPF -> Presence -> Preamp -> Gate -> Vocal Compressor -> Mixed Master Bus
+          try {
+            micSource.connect(micHighPassFilterRef.current);
+            micHighPassFilterRef.current.connect(micPresenceFilterRef.current);
+            micPresenceFilterRef.current.connect(micPreampGainNodeRef.current);
+            micPreampGainNodeRef.current.connect(micGainNodeRef.current);
+            if (vocalCompressorNodeRef.current && mixedMasterBusRef.current) {
+              micGainNodeRef.current.connect(vocalCompressorNodeRef.current);
+              vocalCompressorNodeRef.current.connect(mixedMasterBusRef.current);
             }
+          } catch (e) {
+            console.warn('[Mic Chain] Connect note:', e);
           }
-          if (audio.srcObject) {
-            audio.play().catch((playErr) => {
-              console.warn(`[Audio Recovery] Re-play remote audio error for ${peerId}:`, playErr);
-            });
+
+          // VAD Analyser Node
+          if (!analyserRef.current) {
+            const analyserNode = ctx.createAnalyser();
+            analyserNode.fftSize = 256;
+            analyserNode.smoothingTimeConstant = 0.4;
+            analyserRef.current = analyserNode;
           }
-        }
-      }
+          try {
+            micSource.connect(analyserRef.current);
+          } catch {}
 
-      await resumeAudioContext();
-      playRecoveryBeep();
-      showDeviceToast('✅ Jalur mic & audio dipulihkan');
-      setAudioStatus(newTrack.enabled ? 'connected' : 'muted');
-      return newStream;
-    } catch (err) {
-      console.error('[Audio Recovery] Error tahap finalisasi:', err);
-      return localStreamRef.current;
-    } finally {
-      isSwitchingAudioRef.current = false;
-      lastAudioSwitchTimeRef.current = Date.now();
-    }
-  }, [
-    mode,
-    isMuted,
-    isTransmitting,
-    isDjMode,
-    acquireUniversalStream,
-    ensureAudioPipeline,
-    resumeAudioContext,
-    playRecoveryBeep,
-    triggerDebouncedAudioReload,
-    showDeviceToast,
-  ]);
-
-  // Hardware Switch Listener (ondevicechange) - Mendeteksi penyambungan Headset Bluetooth secara instan
-  useEffect(() => {
-    if (typeof navigator !== 'undefined' && navigator.mediaDevices && 'ondevicechange' in navigator.mediaDevices) {
-      const handleDeviceChange = () => {
-        console.log('[Audio Hardware] ondevicechange terdeteksi.');
-        // 1. Abaikan jika sedang switching atau dalam cooldown 2.5 detik terakhir
-        if (isSwitchingAudioRef.current || Date.now() - lastAudioSwitchTimeRef.current < 2500) {
-          console.log('[Audio Hardware] ondevicechange diabaikan (cooldown aktif).');
-          return;
-        }
-
-        console.log('[Audio Hardware] Perubahan hardware terdeteksi, menjadwalkan penyesuaian jalur audio...');
-        triggerDebouncedAudioReload('🎧 Headset / Bluetooth terdeteksi');
-      };
-
-      navigator.mediaDevices.ondevicechange = handleDeviceChange;
-      return () => {
-        if (navigator.mediaDevices) {
-          navigator.mediaDevices.ondevicechange = null;
-        }
-      };
-    }
-  }, [triggerDebouncedAudioReload]);
-
-  const setupLocalAudioStream = restartAudioStream;
-
-  // Auto-Resume and unlock all incoming audio on user gesture & visibility change
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        resumeAudioContext();
-        (Object.values(audioElementsRef.current) as HTMLAudioElement[]).forEach((audio) => {
-          if (audio && audio.paused && audio.srcObject) {
-            audio.play().catch(() => {});
-          }
-        });
-      }
-    };
-
-    const unlockAudioPlayback = () => {
-      resumeAudioContext();
-      (Object.values(audioElementsRef.current) as HTMLAudioElement[]).forEach((audio) => {
-        if (audio && audio.srcObject) {
-          audio.muted = false;
-          audio.volume = receiverVolume;
-          if (audio.paused) {
-            audio.play().catch(() => {});
-          }
-        }
-      });
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('focus', unlockAudioPlayback);
-    window.addEventListener('touchstart', unlockAudioPlayback, { passive: true });
-    window.addEventListener('click', unlockAudioPlayback, { passive: true });
-
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('focus', unlockAudioPlayback);
-      window.removeEventListener('touchstart', unlockAudioPlayback);
-      window.removeEventListener('click', unlockAudioPlayback);
-    };
-  }, [resumeAudioContext, receiverVolume]);
-
-  // Adjust all remote audio elements when receiverVolume changes
-  useEffect(() => {
-    (Object.values(audioElementsRef.current) as HTMLAudioElement[]).forEach((audio) => {
-      if (audio) audio.volume = receiverVolume;
-    });
-  }, [receiverVolume]);
-
-  // Audio Output Routing Logic (Speakerphone Bawaan HP vs Headset/Bluetooth)
-  const updateAudioOutput = useCallback(
-    async (mode: AudioOutputMode) => {
-      setAudioOutputMode(mode);
-      try {
-        let targetSinkId = '';
-
-        if (mode === 'speaker') {
-          // Cari output speaker / loudspeaker internal
-          if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            const audioOutputs = devices.filter((d) => d.kind === 'audiooutput');
-            const speakerDev = audioOutputs.find(
-              (d) =>
-                d.label.toLowerCase().includes('speaker') ||
-                d.label.toLowerCase().includes('loudspeaker') ||
-                d.label.toLowerCase().includes('spk')
-            );
-            if (speakerDev && speakerDev.deviceId) {
-              targetSinkId = speakerDev.deviceId;
-            }
-          }
-        } else {
-          // Mode Headset: kosongkan sinkId ('') agar OS Android/Xiaomi meroute langsung ke Bluetooth headset/earpiece
-          targetSinkId = '';
-        }
-
-        activeSinkIdRef.current = targetSinkId;
-
-        // Terapkan sinkId ke seluruh remote audio elements jika didukung
-        if ('setSinkId' in HTMLMediaElement.prototype) {
-          for (const audio of Object.values(audioElementsRef.current) as HTMLAudioElement[]) {
-            if (audio && typeof (audio as any).setSinkId === 'function') {
-              try {
-                await (audio as any).setSinkId(targetSinkId);
-              } catch (e) {
-                console.warn('[Audio Output] setSinkId error:', e);
+          // VAD Meter Interval
+          if (!vadIntervalRef.current && analyserRef.current) {
+            const buffer = new Uint8Array(analyserRef.current.frequencyBinCount);
+            vadIntervalRef.current = window.setInterval(() => {
+              if (!localStreamRef.current?.getAudioTracks()[0]?.enabled) {
+                if (isSpeakingStateRef.current) {
+                  isSpeakingStateRef.current = false;
+                  setIsMySpeaking(false);
+                  socket?.emit('voice-state', { isSpeaking: false });
+                }
+                return;
               }
-            }
-            // Pastikan audio remote rider lawan tidak ter-pause saat berpindah mode
-            if (audio && audio.paused && audio.srcObject) {
-              audio.play().catch(console.warn);
-            }
+
+              if (analyserRef.current) {
+                analyserRef.current.getByteFrequencyData(buffer);
+                let sum = 0;
+                for (let i = 0; i < buffer.length; i++) sum += buffer[i];
+                const avg = sum / buffer.length;
+
+                if (avg > 25 && !isSpeakingStateRef.current) {
+                  isSpeakingStateRef.current = true;
+                  setIsMySpeaking(true);
+                  socket?.emit('voice-state', { isSpeaking: true });
+                } else if (avg <= 25 && isSpeakingStateRef.current) {
+                  isSpeakingStateRef.current = false;
+                  setIsMySpeaking(false);
+                  socket?.emit('voice-state', { isSpeaking: false });
+                }
+              }
+            }, 100);
           }
         }
 
-        await resumeAudioContext();
+        // 6. Inisialisasi Elemen Audio Musik DJ
+        let audioEl = musicAudioRef.current;
+        if (!audioEl) {
+          audioEl = document.getElementById('dj-music-audio-element') as HTMLAudioElement;
+          if (!audioEl) {
+            audioEl = document.createElement('audio');
+            audioEl.id = 'dj-music-audio-element';
+            audioEl.loop = false;
+            audioEl.setAttribute('playsinline', 'true');
+            audioEl.setAttribute('webkit-playsinline', 'true');
+            audioEl.style.position = 'fixed';
+            audioEl.style.bottom = '0px';
+            audioEl.style.right = '0px';
+            audioEl.style.width = '1px';
+            audioEl.style.height = '1px';
+            audioEl.style.opacity = '0.01';
+            audioEl.style.pointerEvents = 'none';
+            document.body.appendChild(audioEl);
+          }
 
-        showDeviceToast(
-          mode === 'speaker'
-            ? '🔊 Output: Speakerphone (Bawaan HP)'
-            : '🎧 Output: Headset / Bluetooth Helm'
-        );
+          audioEl.onended = () => {
+            console.log('[DJ] Lagu selesai, lanjut ke lagu berikutnya...');
+            playNextTrackRef.current?.();
+          };
+
+          // Auto-recovery jika musik terhenti mendadak oleh interupsi OS, sinyal, atau browser throttling
+          audioEl.onpause = () => {
+            if (isMusicPlayingRef.current) {
+              console.log('[DJ] Deteksi musik terpause tak terduga, menjadwalkan auto-resume...');
+              setTimeout(() => {
+                if (isMusicPlayingRef.current && audioEl && audioEl.paused) {
+                  audioEl.play().catch((err) => {
+                    console.warn('[DJ] Auto-resume onpause note:', err);
+                  });
+                }
+              }, 250);
+            }
+          };
+
+          audioEl.onerror = (e) => {
+            console.warn('[DJ] Audio playback error terdeteksi:', e);
+            if (isMusicPlayingRef.current && audioEl && audioEl.src) {
+              const lastTime = audioEl.currentTime;
+              setTimeout(() => {
+                if (isMusicPlayingRef.current && audioEl) {
+                  audioEl.load();
+                  audioEl.currentTime = lastTime;
+                  audioEl.play().catch(() => {});
+                }
+              }, 500);
+            }
+          };
+
+          musicAudioRef.current = audioEl;
+        }
+
+        if (audioEl) {
+          try {
+            audioEl.volume = musicVolume;
+          } catch {}
+        }
+
+        // 7. Hubungkan MediaElementSource ke WebAudio Graph SEKALI saja
+        if (!musicSourceNodeRef.current && audioEl) {
+          try {
+            musicSourceNodeRef.current = ctx.createMediaElementSource(audioEl);
+          } catch (e) {
+            console.warn('[DJ] createMediaElementSource note:', e);
+          }
+        }
+
+        // Gain Musik Lokal (Speaker/Headset DJ sendiri)
+        if (!musicGainNodeRef.current) {
+          const mg = ctx.createGain();
+          mg.gain.setValueAtTime(musicVolume, ctx.currentTime);
+          musicGainNodeRef.current = mg;
+        }
+
+        // Vocal Pocket Filter on Music Track (2500Hz dip -3.5dB): Memberi ruang frekuensi vokal rider agar musik tidak menabrak/menutupi suara manusia
+        if (!musicPocketFilterRef.current) {
+          const pocket = ctx.createBiquadFilter();
+          pocket.type = 'peaking';
+          pocket.frequency.setValueAtTime(2500, ctx.currentTime);
+          pocket.gain.setValueAtTime(-3.5, ctx.currentTime);
+          pocket.Q.setValueAtTime(1.0, ctx.currentTime);
+          musicPocketFilterRef.current = pocket;
+        }
+
+        // Gain Musik Siaran Campuran WebRTC (Siaran ke rider lain - Terisolasi & Stabil)
+        if (!musicMixedGainNodeRef.current) {
+          const mm = ctx.createGain();
+          const targetMix = isDjMode && isMusicPlaying ? (musicVolume * 0.70) : 0.0;
+          mm.gain.setValueAtTime(targetMix, ctx.currentTime);
+          musicMixedGainNodeRef.current = mm;
+        }
+
+        // Sambungkan Musik Secara Terpisah (Independent Parallel Routing):
+        // 1. Source -> MusicGain (Lokal) -> ctx.destination (DJ dengar sesuai slider)
+        // 2. Source -> MusicPocketFilter -> MusicMixedGain (Siaran WebRTC) -> MixedMasterBus (Stabil ke rider lain)
+        if (
+          musicSourceNodeRef.current &&
+          musicGainNodeRef.current &&
+          musicMixedGainNodeRef.current &&
+          mixedMasterBusRef.current
+        ) {
+          try {
+            musicSourceNodeRef.current.disconnect();
+          } catch {}
+
+          try {
+            // Jalur Lokal DJ (Full-range hi-fi tanpa pemotongan)
+            musicSourceNodeRef.current.connect(musicGainNodeRef.current);
+            musicGainNodeRef.current.connect(ctx.destination);
+
+            // Jalur Siaran Campuran (Direct Stable Broadcast -> Master Bus)
+            if (musicPocketFilterRef.current) {
+              musicSourceNodeRef.current.connect(musicPocketFilterRef.current);
+              musicPocketFilterRef.current.connect(musicMixedGainNodeRef.current);
+            } else {
+              musicSourceNodeRef.current.connect(musicMixedGainNodeRef.current);
+            }
+            musicMixedGainNodeRef.current.connect(mixedMasterBusRef.current);
+          } catch (e) {
+            console.warn('[Music Chain] Connect note:', e);
+          }
+        }
       } catch (err) {
-        console.warn('[Audio Output] Error updating sink:', err);
-        showDeviceToast(
-          mode === 'speaker'
-            ? '🔊 Output: Speakerphone'
-            : '🎧 Output: Headset'
-        );
+        console.warn('[Audio Pipeline] Setup note:', err);
       }
     },
-    [showDeviceToast, resumeAudioContext]
+    [getAudioContext, mode, isMuted, isTransmitting, musicVolume, isDjMode, isMusicPlaying, socket, micBoost]
   );
 
-  const toggleAudioOutput = useCallback(() => {
-    const nextMode = audioOutputMode === 'speaker' ? 'headset' : 'speaker';
-    updateAudioOutput(nextMode);
-  }, [audioOutputMode, updateAudioOutput]);
-
-  // Get active outgoing track (mic or DJ mixed)
+  // Audio track aktif yang selalu mengalir ke peer WebRTC
   const getActiveOutgoingTrack = useCallback(() => {
-    if (isDjMode && mixedDestinationRef.current) {
-      return mixedDestinationRef.current.stream.getAudioTracks()[0] || null;
+    if (mixedDestinationRef.current) {
+      const mixedTrack = mixedDestinationRef.current.stream.getAudioTracks()[0];
+      if (mixedTrack) return mixedTrack;
     }
     return localStreamRef.current?.getAudioTracks()[0] || localStream?.getAudioTracks()[0] || null;
-  }, [isDjMode, localStream]);
+  }, [localStream]);
 
-  // Replace or add track on all active peer connections when outgoing track changes
+  // Sinkronisasi active track ke semua peer WebRTC tanpa memutus koneksi
   const syncTrackToPeers = useCallback(() => {
     const newTrack = getActiveOutgoingTrack();
     if (!newTrack) return;
 
+    if (newTrack.enabled === false && mode === 'ALWAYS_ON' && !isMuted) {
+      newTrack.enabled = true;
+    }
+
+    const outgoingStream = mixedDestinationRef.current
+      ? mixedDestinationRef.current.stream
+      : localStreamRef.current;
+
     (Object.values(peersRef.current) as RTCPeerConnection[]).forEach((pc) => {
-      const senders = pc.getSenders();
-      const audioSender = senders.find((s) => s.track && s.track.kind === 'audio');
-      if (audioSender) {
-        audioSender.replaceTrack(newTrack).catch((err) => {
-          console.warn('[WebRTC] replaceTrack warning:', err);
-        });
-      } else if (localStreamRef.current) {
-        try {
-          pc.addTrack(newTrack, localStreamRef.current);
-        } catch (e) {
-          console.warn('[WebRTC] addTrack warning:', e);
+      try {
+        const senders = pc.getSenders();
+        let audioSender = senders.find((s) => s.track && s.track.kind === 'audio');
+        if (!audioSender) {
+          audioSender = senders.find((s) => !s.track);
         }
+        if (audioSender && audioSender.track !== newTrack) {
+          audioSender.replaceTrack(newTrack).catch((err) => {
+            console.warn('[WebRTC] replaceTrack warning:', err);
+          });
+        } else if (!audioSender && outgoingStream) {
+          pc.addTrack(newTrack, outgoingStream);
+        }
+      } catch (e) {
+        console.warn('[WebRTC] sync track error:', e);
       }
     });
-  }, [getActiveOutgoingTrack]);
+  }, [getActiveOutgoingTrack, mode, isMuted]);
 
-  // Trigger sync when DJ mode or localStream changes
-  useEffect(() => {
-    syncTrackToPeers();
-  }, [isDjMode, localStream, syncTrackToPeers]);
+  // Restart / Switch Audio Stream dengan Transisi Mulus Antar Perangkat (HP / Bluetooth / Headset)
+  const restartAudioStream = useCallback(
+    async (targetDeviceId?: string) => {
+      if (isSwitchingAudioRef.current) return localStreamRef.current;
+      isSwitchingAudioRef.current = true;
+      console.log('[Audio Transition] Memulai transisi perangkat audio...');
 
-  // 2. Initialize Microphone with Wind & Noise Suppression
-  const initMicrophone = useCallback(async () => {
+      try {
+        await resumeAudioContext();
+        const newStream = await acquireUniversalStream(targetDeviceId);
+        if (!newStream || newStream.getAudioTracks().length === 0) {
+          isSwitchingAudioRef.current = false;
+          return localStreamRef.current;
+        }
+
+        if (localStreamRef.current) {
+          localStreamRef.current.getTracks().forEach((t) => {
+            try {
+              t.stop();
+            } catch {}
+          });
+        }
+
+        localStreamRef.current = newStream;
+        setLocalStream(newStream);
+        const newTrack = newStream.getAudioTracks()[0];
+
+        if (mode === 'ALWAYS_ON') {
+          newTrack.enabled = !isMuted;
+        } else {
+          newTrack.enabled = isTransmitting && !isMuted;
+        }
+
+        ensureAudioPipeline(newStream);
+        syncTrackToPeers();
+        await applyAudioSinkId();
+        unpauseAllRemoteAudios();
+        await refreshAudioDevices();
+
+        const label = newTrack.label || 'Audio';
+        const isExt = isBluetoothOrHeadset(label);
+        showDeviceToast(isExt ? `🎧 Terhubung ke: ${label}` : `📱 Beralih ke Mic & Speaker HP`);
+
+        return newStream;
+      } catch (e) {
+        console.warn('[Audio Transition] Error switching audio stream:', e);
+        return localStreamRef.current;
+      } finally {
+        isSwitchingAudioRef.current = false;
+      }
+    },
+    [
+      acquireUniversalStream,
+      mode,
+      isMuted,
+      isTransmitting,
+      ensureAudioPipeline,
+      syncTrackToPeers,
+      unpauseAllRemoteAudios,
+      showDeviceToast,
+      resumeAudioContext,
+      applyAudioSinkId,
+      refreshAudioDevices,
+    ]
+  );
+
+  // Force Fix & Re-sync Audio (Tombol Darurat 1-Tap jika suara senyap saat ganti HP/Headset)
+  const forceFixAudio = useCallback(async () => {
+    setIsFixingAudio(true);
     try {
-      setAudioStatus('connecting');
-      const stream = await setupLocalAudioStream();
-
-      // Voice Activity Detection (VAD) & WebAudio mixing pipeline
-      const AudioContextClass =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (AudioContextClass && !audioContextRef.current) {
-        const ctx = new AudioContextClass();
-        audioContextRef.current = ctx;
-
-        ctx.onstatechange = () => {
-          console.log(`[Audio Focus] audioCtx state: ${ctx.state}`);
-          if (
-            (ctx.state === 'suspended' || (ctx.state as string) === 'interrupted') &&
-            document.visibilityState === 'visible'
-          ) {
-            ctx.resume().catch(console.warn);
-          }
-        };
-
-        const micSource = ctx.createMediaStreamSource(stream);
-        micSourceNodeRef.current = micSource;
-        const micGain = ctx.createGain();
-        micGainNodeRef.current = micGain;
-        micSource.connect(micGain);
-
-        const analyserNode = ctx.createAnalyser();
-        analyserNode.fftSize = 256;
-        analyserNode.smoothingTimeConstant = 0.4;
-        micSource.connect(analyserNode);
-        analyserRef.current = analyserNode;
-
-        // Destination for mixed audio (Mic + DJ MP3) -> routed to WebRTC peers
-        const mixedDest = ctx.createMediaStreamDestination();
-        mixedDestinationRef.current = mixedDest;
-        micGain.connect(mixedDest);
-
-        // VAD interval check (Runs purely in browser)
-        const buffer = new Uint8Array(analyserNode.frequencyBinCount);
-        if (vadIntervalRef.current) clearInterval(vadIntervalRef.current);
-        vadIntervalRef.current = window.setInterval(() => {
-          if (!localStreamRef.current?.getAudioTracks()[0]?.enabled) {
-            if (isSpeakingStateRef.current) {
-              isSpeakingStateRef.current = false;
-              setIsMySpeaking(false);
-              socket?.emit('voice-state', { isSpeaking: false });
-            }
-            return;
-          }
-
-          analyserNode.getByteFrequencyData(buffer);
-          let sum = 0;
-          for (let i = 0; i < buffer.length; i++) sum += buffer[i];
-          const avg = sum / buffer.length;
-
-          if (avg > 25 && !isSpeakingStateRef.current) {
-            isSpeakingStateRef.current = true;
-            setIsMySpeaking(true);
-            socket?.emit('voice-state', { isSpeaking: true });
-          } else if (avg <= 25 && isSpeakingStateRef.current) {
-            isSpeakingStateRef.current = false;
-            setIsMySpeaking(false);
-            socket?.emit('voice-state', { isSpeaking: false });
-          }
-        }, 100);
-      }
-
-      setAudioStatus('connected');
-      playIntercomChirp('join');
+      console.log('[Audio Force Fix] Melakukan reset & pemulihan total audio engine...');
       await resumeAudioContext();
-      syncTrackToPeers();
-    } catch (err: unknown) {
-      console.error('Microphone init error:', err);
-      setAudioStatus('error');
-      setErrorMessage(
-        err instanceof Error ? err.message : 'Gagal mengakses mikrofon. Periksa izin browser.'
-      );
+      await restartAudioStream();
+      unpauseAllRemoteAudios();
+      await applyAudioSinkId();
+      playIntercomChirp('join');
+      showDeviceToast('⚡ Audio berhasil dipulihkan & aktif!');
+    } catch (e) {
+      console.warn('[Audio Force Fix] Error:', e);
+      showDeviceToast('⚠️ Gagal memulihkan otomatis, cek izin mikrofon browser');
+    } finally {
+      setIsFixingAudio(false);
     }
-  }, [setupLocalAudioStream, socket, resumeAudioContext]);
+  }, [resumeAudioContext, restartAudioStream, unpauseAllRemoteAudios, applyAudioSinkId, showDeviceToast]);
 
-  // 3. Setup Peer Connection (STUN Google dengan candidate queue dan direct output sink)
-  const createPeerConnection = useCallback(
-    (userId: string) => {
-      if (peersRef.current[userId]) {
-        try {
-          peersRef.current[userId].close();
-        } catch {}
+  // Listener Otomatis Pergantian Perangkat Hardware (navigator.mediaDevices.ondevicechange)
+  useEffect(() => {
+    const handleDeviceChange = async () => {
+      console.log('[Hardware Audio Event] Deteksi pasang/cabut perangkat audio (Bluetooth/Kabel)...');
+      if (deviceChangeDebounceRef.current) {
+        window.clearTimeout(deviceChangeDebounceRef.current);
+      }
+      deviceChangeDebounceRef.current = window.setTimeout(async () => {
+        if (
+          audioStatus === 'connected' ||
+          audioStatus === 'connecting' ||
+          audioStatus === 'muted' ||
+          localStreamRef.current
+        ) {
+          await restartAudioStream();
+        } else {
+          await refreshAudioDevices();
+        }
+      }, 400);
+    };
+
+    if (navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener === 'function') {
+      navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange);
+      navigator.mediaDevices.ondevicechange = handleDeviceChange;
+    }
+
+    refreshAudioDevices();
+
+    return () => {
+      if (navigator.mediaDevices && typeof navigator.mediaDevices.removeEventListener === 'function') {
+        navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
+        navigator.mediaDevices.ondevicechange = null;
+      }
+      if (deviceChangeDebounceRef.current) {
+        window.clearTimeout(deviceChangeDebounceRef.current);
+      }
+    };
+  }, [audioStatus, restartAudioStream, refreshAudioDevices]);
+
+  // Watchdog Timer Pemulihan Otomatis (Self-Healing Loop) tiap 2 detik
+  useEffect(() => {
+    const watchdogInterval = window.setInterval(() => {
+      if (
+        audioContextRef.current &&
+        (audioContextRef.current.state === 'suspended' ||
+          audioContextRef.current.state === ('interrupted' as AudioContextState))
+      ) {
+        audioContextRef.current.resume().catch(() => {});
       }
 
+      (Object.values(audioElementsRef.current) as HTMLAudioElement[]).forEach((el) => {
+        if (el && el.paused && el.srcObject) {
+          el.play().catch(() => {});
+        }
+      });
+
+      // Watchdog untuk elemen pemutar musik DJ lokal jika ter-pause tak terduga
+      if (isMusicPlayingRef.current && musicAudioRef.current && musicAudioRef.current.paused) {
+        console.log('[Audio Watchdog] Menghidupkan kembali pemutaran musik DJ yang sempat terhenti...');
+        musicAudioRef.current.play().catch(() => {});
+      }
+
+      if (localStreamRef.current && (audioStatus === 'connected' || audioStatus === 'muted')) {
+        const trk = localStreamRef.current.getAudioTracks()[0];
+        if (trk && trk.readyState === 'ended' && !isSwitchingAudioRef.current) {
+          console.warn('[Audio Watchdog] Track mikrofon terdeteksi mati, memulai pemulihan...');
+          restartAudioStream();
+        }
+      }
+    }, 2000);
+
+    return () => clearInterval(watchdogInterval);
+  }, [audioStatus, restartAudioStream]);
+
+  // Sinkronisasi status jumlah peer audio yang benar-benar terhubung
+  const updateConnectedPeersCount = useCallback(() => {
+    let count = 0;
+    (Object.values(peersRef.current) as RTCPeerConnection[]).forEach((pc) => {
+      if (
+        pc.iceConnectionState === 'connected' ||
+        pc.iceConnectionState === 'completed' ||
+        pc.connectionState === 'connected'
+      ) {
+        count += 1;
+      }
+    });
+    setConnectedPeersCount(count);
+  }, []);
+
+  // Buat koneksi RTCPeerConnection baru dengan Jitter Smoothing Buffer & Dynamic Recovery
+  const createPeerConnection = useCallback(
+    (userId: string): RTCPeerConnection => {
+      if (peersRef.current[userId] && peersRef.current[userId].signalingState !== 'closed') {
+        return peersRef.current[userId];
+      }
+
+      console.log(`[WebRTC] Creating RTCPeerConnection for rider: ${userId}`);
       const pc = new RTCPeerConnection(iceServers);
       peersRef.current[userId] = pc;
-      queuedCandidatesRef.current[userId] = [];
 
-      // Add local audio track
+      // Tambahkan broadcast audio track permanen
       const activeTrack = getActiveOutgoingTrack();
-      const currentStream = localStreamRef.current;
+      const currentStream = mixedDestinationRef.current
+        ? mixedDestinationRef.current.stream
+        : localStreamRef.current || undefined;
+
       if (activeTrack && currentStream) {
         try {
           pc.addTrack(activeTrack, currentStream);
@@ -786,18 +1039,95 @@ export function useIntercomAudio({
 
       pc.oniceconnectionstatechange = () => {
         console.log(`[WebRTC] ICE state (${userId}): ${pc.iceConnectionState}`);
-        if (pc.iceConnectionState === 'failed') {
-          console.warn(`[WebRTC] ICE failed with ${userId}, restarting ICE...`);
-          if ('restartIce' in pc) {
-            pc.restartIce();
-          }
+        updateConnectedPeersCount();
+
+        if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+          unpauseAllRemoteAudios();
+        }
+
+        if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+          console.warn(`[WebRTC] ICE ${pc.iceConnectionState} with ${userId}, scheduling ICE restart...`);
+          setTimeout(() => {
+            if (
+              peersRef.current[userId] === pc &&
+              (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected')
+            ) {
+              initiatePeerCall(userId, true);
+            }
+          }, 1200);
         }
       };
 
-      // Receive remote audio stream (Zoom Conference Call direct playback)
+      pc.onconnectionstatechange = () => {
+        console.log(`[WebRTC] Connection state (${userId}): ${pc.connectionState}`);
+        updateConnectedPeersCount();
+      };
+
+      // Penerimaan Audio Remote dari Rider Lawan
       pc.ontrack = (event) => {
         console.log(`[WebRTC] Received audio track from ${userId}, track id: ${event.track.id}`);
-        const remoteStream = (event.streams && event.streams[0]) ? event.streams[0] : new MediaStream([event.track]);
+        const remoteStream =
+          event.streams && event.streams[0] ? event.streams[0] : new MediaStream([event.track]);
+
+        try {
+          const receivers = pc.getReceivers();
+          const r = receivers.find((rec) => rec.track && rec.track.id === event.track.id) || receivers[0];
+          if (r) {
+            if ('playoutDelayHint' in r) {
+              (r as unknown as { playoutDelayHint: number }).playoutDelayHint = 0.20;
+            }
+            if ('jitterBufferTarget' in r) {
+              (r as unknown as { jitterBufferTarget: number }).jitterBufferTarget = 200;
+            }
+          }
+        } catch (e) {
+          console.warn('[WebRTC] Receiver buffer tuning note:', e);
+        }
+
+        const ctx = getAudioContext();
+        if (
+          ctx.state === 'suspended' ||
+          ctx.state === ('interrupted' as AudioContextState)
+        ) {
+          ctx.resume().catch(() => {});
+        }
+
+        if (!remoteMasterLimiterRef.current) {
+          const lim = ctx.createDynamicsCompressor();
+          lim.threshold.setValueAtTime(-1.5, ctx.currentTime);
+          lim.knee.setValueAtTime(6, ctx.currentTime);
+          lim.ratio.setValueAtTime(4.0, ctx.currentTime);
+          lim.attack.setValueAtTime(0.003, ctx.currentTime);
+          lim.release.setValueAtTime(0.25, ctx.currentTime);
+          lim.connect(ctx.destination);
+          remoteMasterLimiterRef.current = lim;
+        }
+
+        // Seluruh audio remote (termasuk DJ) menggunakan receiverVolume murni
+        // Hal ini memisahkan volume suara teman dari volume musik dan mencegah suara DJ tercekik
+        const initialGain = receiverVolume;
+
+        if (!remoteGainNodesRef.current[userId]) {
+          const rGain = ctx.createGain();
+          rGain.gain.setValueAtTime(initialGain, ctx.currentTime);
+          rGain.connect(remoteMasterLimiterRef.current);
+          remoteGainNodesRef.current[userId] = rGain;
+        } else {
+          remoteGainNodesRef.current[userId].gain.setValueAtTime(initialGain, ctx.currentTime);
+        }
+
+        if (remoteSourceNodesRef.current[userId]) {
+          try {
+            remoteSourceNodesRef.current[userId].disconnect();
+          } catch {}
+        }
+        try {
+          const rSrc = ctx.createMediaStreamSource(remoteStream);
+          rSrc.connect(remoteGainNodesRef.current[userId]);
+          remoteSourceNodesRef.current[userId] = rSrc;
+        } catch (e) {
+          console.warn('[WebAudio] Remote source connection note:', e);
+        }
 
         let audio = audioElementsRef.current[userId];
         if (!audio) {
@@ -807,7 +1137,6 @@ export function useIntercomAudio({
           audio.muted = false;
           audio.setAttribute('playsinline', 'true');
           audio.setAttribute('webkit-playsinline', 'true');
-          // Posisi tetap di viewport agar tidak dianggap phantom tab oleh MIUI Xiaomi
           audio.style.position = 'fixed';
           audio.style.bottom = '0px';
           audio.style.right = '0px';
@@ -818,104 +1147,210 @@ export function useIntercomAudio({
           document.body.appendChild(audio);
           audioElementsRef.current[userId] = audio;
 
-          // Tangani jika OS Xiaomi mem-pause audio saat Bluetooth tersambung/berpindah
           audio.onpause = () => {
-            console.log(`[Audio Element] Remote audio for ${userId} ter-pause oleh OS. Mencoba auto-resume...`);
             setTimeout(() => {
               if (audio && audio.paused && audio.srcObject) {
                 audio.play().catch(() => {});
               }
-            }, 300);
+            }, 100);
           };
         }
 
+        event.track.onunmute = () => {
+          if (audio && audio.paused && audio.srcObject) {
+            audio.play().catch(() => {});
+          }
+          if (
+            ctx.state === 'suspended' ||
+            ctx.state === ('interrupted' as AudioContextState)
+          ) {
+            ctx.resume().catch(() => {});
+          }
+        };
+
         audio.srcObject = remoteStream;
         audio.muted = false;
-        audio.volume = receiverVolume;
+        audio.volume = 0.001;
 
-        // Pasang sinkId jika didukung dan valid
-        if ('setSinkId' in HTMLMediaElement.prototype && typeof (audio as any).setSinkId === 'function') {
-          (audio as any).setSinkId(activeSinkIdRef.current || '').catch((err: unknown) => {
-            console.warn('[Audio Output] setSinkId non-fatal error:', err);
-          });
+        if (selectedOutputId && 'setSinkId' in audio) {
+          try {
+            (audio as unknown as { setSinkId: (id: string) => Promise<void> }).setSinkId(selectedOutputId);
+          } catch {}
         }
 
         const playPromise = audio.play();
         if (playPromise !== undefined) {
           playPromise.catch((playErr) => {
-            console.warn(`[WebRTC] Audio auto-play prevented for ${userId}:`, playErr);
+            console.warn(`[WebRTC] Audio auto-play note for ${userId}:`, playErr);
           });
         }
       };
 
       return pc;
     },
-    [getActiveOutgoingTrack, socket, receiverVolume]
+    [getActiveOutgoingTrack, socket, receiverVolume, getAudioContext, selectedOutputId, updateConnectedPeersCount, unpauseAllRemoteAudios]
   );
 
-  // 4. Handle Socket.io WebRTC Signals (Reliable Conference Call Mesh)
+  // Inisiasi Panggilan P2P / Offer ke target user dengan perlindungan Perfect Negotiation
+  const initiatePeerCall = useCallback(
+    async (targetUserId: string, restartIce: boolean = false) => {
+      if (!socket || !targetUserId || targetUserId === socket.id) return;
+      console.log(`[WebRTC] Initiating call to rider: ${targetUserId} (restartIce=${restartIce})`);
+
+      let pc = peersRef.current[targetUserId];
+      if (!pc) {
+        pc = createPeerConnection(targetUserId);
+      }
+
+      try {
+        makingOfferRef.current[targetUserId] = true;
+        const offer = await pc.createOffer({
+          offerToReceiveAudio: true,
+          iceRestart: restartIce,
+        });
+        offer.sdp = optimizeOpusSdp(offer.sdp || '');
+
+        if (pc.signalingState !== 'stable') {
+          console.warn(`[WebRTC] Skipping setLocalDescription, signalingState is ${pc.signalingState}`);
+          return;
+        }
+
+        await pc.setLocalDescription(offer);
+        socket.emit('signal', { to: targetUserId, signal: offer });
+      } catch (err) {
+        console.error(`[WebRTC] Create offer to ${targetUserId} failed:`, err);
+      } finally {
+        makingOfferRef.current[targetUserId] = false;
+      }
+    },
+    [socket, createPeerConnection]
+  );
+
+  // Optimasi Opus SDP untuk Transmisi Vokal & Musik High-Fidelity Bebas Fluktuasi
+  const optimizeOpusSdp = (sdp: string): string => {
+    if (!sdp) return sdp;
+    return sdp.replace(/a=fmtp:(\d+) (.*)/g, (_match, pt, params) => {
+      const cleanParams = params
+        .replace(/;?usedtx=\d/g, '')
+        .replace(/;?useinbandfec=\d/g, '')
+        .replace(/;?maxaveragebitrate=\d+/g, '')
+        .replace(/;?stereo=\d/g, '')
+        .replace(/;?sprop-stereo=\d/g, '')
+        .replace(/;?cbr=\d/g, '')
+        .replace(/;?ptime=\d+/g, '')
+        .replace(/;?maxptime=\d+/g, '')
+        .replace(/;?sprop-maxcapturerate=\d+/g, '')
+        .replace(/;?maxplaybackrate=\d+/g, '');
+      return `a=fmtp:${pt} ${cleanParams};usedtx=0;useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=96000;cbr=0;ptime=20;maxptime=40;sprop-maxcapturerate=48000;maxplaybackrate=48000`;
+    });
+  };
+
+  // Re-sinkronisasi semua peer yang ada di room (Dipanggil manual atau via watchdog)
+  const syncAllPeers = useCallback(() => {
+    if (!socket || !socket.connected) return;
+    console.log('[WebRTC] Syncing all known peers in room:', knownRoomUsersRef.current);
+    knownRoomUsersRef.current.forEach((peerId) => {
+      if (peerId && peerId !== socket.id) {
+        const pc = peersRef.current[peerId];
+        if (!pc || pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected' || pc.connectionState === 'failed') {
+          initiatePeerCall(peerId, true);
+        } else if (pc.iceConnectionState === 'new' || pc.signalingState === 'stable') {
+          initiatePeerCall(peerId, false);
+        }
+      }
+    });
+  }, [socket, initiatePeerCall]);
+
+  // Handle Socket.io WebRTC Signals & Room Events
   useEffect(() => {
     if (!socket) return;
 
-    // Helper untuk mengoptimalkan Opus SDP untuk kualitas vokal dan ketahanan packet loss
-    const optimizeOpusSdp = (sdp: string): string => {
-      if (!sdp) return sdp;
-      return sdp.replace(/a=fmtp:(\d+) (.*)/g, (match, pt, params) => {
-        if (params.includes('useinbandfec=')) return match;
-        return `a=fmtp:${pt} ${params};useinbandfec=1;usedtx=1;maxaveragebitrate=32000`;
-      });
-    };
-
+    // Saat rider baru bergabung ke room
     const handleUserConnected = async (data: { userId: string; username: string }) => {
-      console.log(`[WebRTC] Initiating call to new rider: ${data.username} (${data.userId})`);
+      if (!data.userId || data.userId === socket.id) return;
+      console.log(`[WebRTC] Rider baru bergabung: ${data.username} (${data.userId})`);
       playIntercomChirp('join');
-      const pc = createPeerConnection(data.userId);
-      try {
-        const offer = await pc.createOffer({ offerToReceiveAudio: true });
-        offer.sdp = optimizeOpusSdp(offer.sdp || '');
-        await pc.setLocalDescription(offer);
-        socket.emit('signal', { to: data.userId, signal: offer });
-      } catch (err) {
-        console.error('[WebRTC] Create offer failed:', err);
+
+      if (!knownRoomUsersRef.current.includes(data.userId)) {
+        knownRoomUsersRef.current.push(data.userId);
       }
+
+      await initiatePeerCall(data.userId);
     };
 
+    // Saat menerima daftar rider yang sudah ada di dalam room
+    const handleRoomUsers = (data: { roomId: string; users: { userId: string; username: string }[] }) => {
+      if (!data.users || !Array.isArray(data.users)) return;
+      console.log(`[WebRTC] Daftar rider di room (${data.roomId}):`, data.users);
+
+      const otherUserIds = data.users
+        .map((u) => u.userId)
+        .filter((id) => id && id !== socket.id);
+
+      knownRoomUsersRef.current = otherUserIds;
+
+      // Tunggu 600ms agar rider lama memiliki kesempatan membuat offer terlebih dahulu
+      setTimeout(() => {
+        otherUserIds.forEach((targetId) => {
+          const pc = peersRef.current[targetId];
+          if (!pc || (pc.iceConnectionState === 'new' && pc.signalingState === 'stable')) {
+            console.log(`[WebRTC] Memulai inisiasi P2P fallback ke rider lama: ${targetId}`);
+            initiatePeerCall(targetId);
+          }
+        });
+      }, 700);
+    };
+
+    // Handle Pertukaran Sinyal WebRTC (Offer, Answer, ICE Candidate)
     const handleSignal = async (data: {
       from: string;
       signal: RTCSessionDescriptionInit & { candidate?: RTCIceCandidateInit };
     }) => {
       const { from, signal } = data;
-      let pc = peersRef.current[from];
+      if (!from || from === socket.id) return;
 
+      if (!knownRoomUsersRef.current.includes(from)) {
+        knownRoomUsersRef.current.push(from);
+      }
+
+      let pc = peersRef.current[from];
       if (!pc) {
         pc = createPeerConnection(from);
       }
 
       try {
         if (signal.type === 'offer') {
-          // Glare Collision Handling (Zoom/W3C Polite Peer Pattern)
-          if (pc.signalingState !== 'stable') {
-            const isPolite = (socket.id || '').localeCompare(from) > 0;
+          const isPolite = socket.id ? socket.id.localeCompare(from) > 0 : true;
+          const offerCollision =
+            pc.signalingState !== 'stable' ||
+            makingOfferRef.current[from] ||
+            (pc as unknown as { isMakingOffer?: boolean }).isMakingOffer;
+
+          if (offerCollision) {
+            console.log(`[WebRTC] Offer collision detected with ${from}. Is polite: ${isPolite}`);
             if (!isPolite) {
-              console.log(`[WebRTC] Glare collision from ${from}. Impolite peer ignoring offer.`);
+              console.log(`[WebRTC] Impolite peer ignoring offer from ${from}`);
               return;
             }
-            console.log(`[WebRTC] Glare collision from ${from}. Polite peer rolling back offer.`);
-            await pc.setLocalDescription({ type: 'rollback' });
+            await Promise.all([
+              pc.setLocalDescription({ type: 'rollback' } as RTCSessionDescriptionInit),
+              pc.setRemoteDescription(new RTCSessionDescription(signal)),
+            ]);
+          } else {
+            await pc.setRemoteDescription(new RTCSessionDescription(signal));
           }
 
-          await pc.setRemoteDescription(new RTCSessionDescription(signal));
-
-          // Drain queued ICE candidates yang tiba sebelum offer selesai di-set
-          const queued = queuedCandidatesRef.current[from] || [];
-          for (const cand of queued) {
-            try {
-              await pc.addIceCandidate(new RTCIceCandidate(cand));
-            } catch (e) {
-              console.warn('[WebRTC] Queued ICE candidate error:', e);
+          // Proses antrian ICE candidate yang tiba sebelum remote description
+          if (queuedCandidatesRef.current[from]) {
+            for (const cand of queuedCandidatesRef.current[from]) {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(cand));
+              } catch (iceErr) {
+                console.warn('[WebRTC] Queued ICE add error:', iceErr);
+              }
             }
+            delete queuedCandidatesRef.current[from];
           }
-          queuedCandidatesRef.current[from] = [];
 
           const answer = await pc.createAnswer();
           answer.sdp = optimizeOpusSdp(answer.sdp || '');
@@ -924,17 +1359,17 @@ export function useIntercomAudio({
         } else if (signal.type === 'answer') {
           if (pc.signalingState === 'have-local-offer') {
             await pc.setRemoteDescription(new RTCSessionDescription(signal));
+          }
 
-            // Drain queued ICE candidates
-            const queued = queuedCandidatesRef.current[from] || [];
-            for (const cand of queued) {
+          if (queuedCandidatesRef.current[from]) {
+            for (const cand of queuedCandidatesRef.current[from]) {
               try {
                 await pc.addIceCandidate(new RTCIceCandidate(cand));
-              } catch (e) {
-                console.warn('[WebRTC] Queued ICE candidate error:', e);
+              } catch (iceErr) {
+                console.warn('[WebRTC] Queued ICE add error on answer:', iceErr);
               }
             }
-            queuedCandidatesRef.current[from] = [];
+            delete queuedCandidatesRef.current[from];
           }
         } else if (signal.candidate) {
           if (pc.remoteDescription && pc.remoteDescription.type) {
@@ -947,146 +1382,240 @@ export function useIntercomAudio({
           }
         }
       } catch (err) {
-        console.error('[WebRTC] Signal handling error:', err);
+        console.error(`[WebRTC] Signaling error from ${from}:`, err);
       }
     };
 
-    // Auto-reconnect fallback untuk rider yang sudah ada di room (Jeda 5s agar existing occupants mengirim offer terlebih dahulu)
-    const handleRoomUsers = (data: { roomId: string; users: { userId: string; username: string }[] }) => {
-      if (!data.users || data.users.length === 0) return;
-      const timer = setTimeout(() => {
-        data.users.forEach(async (u) => {
-          if (u.userId && !peersRef.current[u.userId]) {
-            console.log(`[WebRTC] Fallback koneksi call ke rider yang ada: ${u.username}`);
-            const pc = createPeerConnection(u.userId);
-            try {
-              const offer = await pc.createOffer({ offerToReceiveAudio: true });
-              offer.sdp = optimizeOpusSdp(offer.sdp || '');
-              await pc.setLocalDescription(offer);
-              socket.emit('signal', { to: u.userId, signal: offer });
-            } catch (err) {
-              console.warn('[WebRTC] Fallback offer error:', err);
-            }
-          }
-        });
-      }, 5000);
-      return () => clearTimeout(timer);
-    };
+    const handleUserDisconnected = (data: { userId: string } | string) => {
+      const targetUserId = typeof data === 'string' ? data : data?.userId;
+      if (!targetUserId) return;
+      console.log(`[WebRTC] Rider disconnected: ${targetUserId}`);
+      playIntercomChirp('leave');
 
-    const handleUserDisconnected = (userId: string) => {
-      if (peersRef.current[userId]) {
+      knownRoomUsersRef.current = knownRoomUsersRef.current.filter((id) => id !== targetUserId);
+
+      // Jangan langsung mematikan status DJ lokal jika perangkat ini adalah DJ yang sedang memutar musik,
+      // atau jika DJ lain hanya mengalami fluktuasi sinyal sementara (server mengelola grace period 25s)
+      const isMe = Boolean(
+        (activeDjState?.activeDjId && socket?.id && activeDjState.activeDjId === socket.id) ||
+        (activeDjState?.activeDjName && myCallsign && activeDjState.activeDjName.trim().toLowerCase() === myCallsign.trim().toLowerCase())
+      );
+      if (activeDjState && activeDjState.activeDjId === targetUserId && !isMe && !isMusicPlayingRef.current) {
+        console.log('[DJ] Remote DJ connection dropped. Waiting for server grace period...');
+      }
+
+      if (peersRef.current[targetUserId]) {
         try {
-          peersRef.current[userId].close();
+          peersRef.current[targetUserId].close();
         } catch {}
-        delete peersRef.current[userId];
+        delete peersRef.current[targetUserId];
       }
-      delete queuedCandidatesRef.current[userId];
-      if (audioElementsRef.current[userId]) {
-        const audio = audioElementsRef.current[userId];
-        audio.pause();
-        audio.srcObject = null;
-        if (audio.parentNode) {
-          audio.parentNode.removeChild(audio);
-        }
-        delete audioElementsRef.current[userId];
+      if (remoteSourceNodesRef.current[targetUserId]) {
+        try {
+          remoteSourceNodesRef.current[targetUserId].disconnect();
+        } catch {}
+        delete remoteSourceNodesRef.current[targetUserId];
       }
+      if (remoteGainNodesRef.current[targetUserId]) {
+        try {
+          remoteGainNodesRef.current[targetUserId].disconnect();
+        } catch {}
+        delete remoteGainNodesRef.current[targetUserId];
+      }
+      if (audioElementsRef.current[targetUserId]) {
+        audioElementsRef.current[targetUserId].srcObject = null;
+        audioElementsRef.current[targetUserId].remove();
+        delete audioElementsRef.current[targetUserId];
+      }
+      updateConnectedPeersCount();
     };
 
+    const handleDjClaimRejected = (data: { message?: string }) => {
+      showDeviceToast(data.message || '🔒 DJ sedang dikontrol oleh rider lain');
+      setIsDjMode(false);
+    };
+
+    const handleConnect = () => {
+      console.log('[WebRTC Socket] Connected/Reconnected, checking DJ & audio sync...');
+      if (isMusicPlayingRef.current) {
+        console.log('[DJ] Socket reconnected while music is playing. Reclaiming DJ status on server...');
+        socket.emit('claim-dj');
+        socket.emit('dj-music-state', {
+          isPlaying: true,
+          trackTitle: musicTrackTitleRef.current,
+        });
+      }
+      syncTrackToPeers();
+    };
+
+    socket.on('connect', handleConnect);
     socket.on('user-connected', handleUserConnected);
-    socket.on('signal', handleSignal);
     socket.on('room-users', handleRoomUsers);
+    socket.on('signal', handleSignal);
     socket.on('user-disconnected', handleUserDisconnected);
+    socket.on('dj-claim-rejected', handleDjClaimRejected);
+
+    // Watchdog Re-sync P2P audio: jika ada rider di room tapi belum ada peer connection
+    const p2pWatchdogInterval = setInterval(() => {
+      if (knownRoomUsersRef.current.length > 0) {
+        const unconnectedUsers = knownRoomUsersRef.current.filter((id) => {
+          const pc = peersRef.current[id];
+          return !pc || pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected';
+        });
+
+        if (unconnectedUsers.length > 0) {
+          console.log('[WebRTC Watchdog] Ditemukan rider yang belum terhubung, mencoba re-sync:', unconnectedUsers);
+          unconnectedUsers.forEach((targetId) => {
+            initiatePeerCall(targetId, true);
+          });
+        }
+      }
+    }, 4500);
 
     return () => {
+      clearInterval(p2pWatchdogInterval);
+      socket.off('connect', handleConnect);
       socket.off('user-connected', handleUserConnected);
-      socket.off('signal', handleSignal);
       socket.off('room-users', handleRoomUsers);
+      socket.off('signal', handleSignal);
       socket.off('user-disconnected', handleUserDisconnected);
+      socket.off('dj-claim-rejected', handleDjClaimRejected);
     };
-  }, [socket, createPeerConnection]);
+  }, [socket, createPeerConnection, initiatePeerCall, updateConnectedPeersCount]);
 
-  // 5. PTT & Mode Muting Controls
+  // Inisialisasi Mikrofon Pengguna
+  const initMicrophone = useCallback(async () => {
+    try {
+      setAudioStatus('connecting');
+      setErrorMessage(null);
+
+      await resumeAudioContext();
+      const stream = await acquireUniversalStream();
+      localStreamRef.current = stream;
+      setLocalStream(stream);
+
+      const track = stream.getAudioTracks()[0];
+      if (track) {
+        if (mode === 'ALWAYS_ON') {
+          track.enabled = !isMuted;
+        } else {
+          track.enabled = false;
+        }
+      }
+
+      ensureAudioPipeline(stream);
+      syncTrackToPeers();
+      setAudioStatus(isMuted ? 'muted' : 'connected');
+      playIntercomChirp('join');
+      await refreshAudioDevices();
+      return stream;
+    } catch (err: unknown) {
+      console.error('Failed to get user media:', err);
+      const isPermissionDenied =
+        err instanceof DOMException &&
+        (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError');
+      const errText = isPermissionDenied
+        ? 'Izin mikrofon ditolak. Klik ikon gembok di URL browser untuk mengizinkan.'
+        : 'Mikrofon tidak terdeteksi atau sedang dipakai aplikasi lain.';
+
+      setErrorMessage(errText);
+      setAudioStatus('failed');
+      return null;
+    }
+  }, [resumeAudioContext, acquireUniversalStream, mode, isMuted, ensureAudioPipeline, syncTrackToPeers, refreshAudioDevices]);
+
+  // Kontrol PTT (Push-To-Talk)
   const startPtt = useCallback(() => {
-    if (mode !== 'PTT' || !localStream || isMuted) return;
+    if (mode !== 'PTT' || !localStream) return;
     const track = localStream.getAudioTracks()[0];
     if (track) {
       track.enabled = true;
+      updateMicGain(true);
       setIsTransmitting(true);
       playIntercomChirp('ptt-on');
       socket?.emit('voice-state', { isSpeaking: true });
     }
-  }, [mode, localStream, isMuted, socket]);
+  }, [mode, localStream, socket, updateMicGain]);
 
   const endPtt = useCallback(() => {
     if (mode !== 'PTT' || !localStream) return;
     const track = localStream.getAudioTracks()[0];
     if (track) {
       track.enabled = false;
+      updateMicGain(false);
       setIsTransmitting(false);
       playIntercomChirp('ptt-off');
       socket?.emit('voice-state', { isSpeaking: false });
     }
-  }, [mode, localStream, socket]);
+  }, [mode, localStream, socket, updateMicGain]);
 
+  // Sinkronisasi mode PTT / ALWAYS_ON
   useEffect(() => {
     if (!localStream) return;
     const track = localStream.getAudioTracks()[0];
     if (!track) return;
 
     if (mode === 'ALWAYS_ON') {
-      track.enabled = !isMuted;
+      const active = !isMuted;
+      track.enabled = active;
+      updateMicGain(active);
       setAudioStatus(isMuted ? 'muted' : 'connected');
     } else {
-      track.enabled = isTransmitting && !isMuted;
-      setAudioStatus(track.enabled ? 'connected' : isMuted ? 'muted' : 'connected');
+      const active = isTransmitting && !isMuted;
+      track.enabled = active;
+      updateMicGain(active);
+      setAudioStatus(active ? 'connected' : isMuted ? 'muted' : 'connected');
     }
-  }, [localStream, mode, isMuted, isTransmitting]);
+  }, [localStream, mode, isMuted, isTransmitting, updateMicGain]);
 
-  // 6. DJ Kapten Audio Engine & Dual Output Routing
-  const ensureDJNodes = useCallback(() => {
-    if (!audioContextRef.current) return;
-    const ctx = audioContextRef.current;
-
-    if (!musicAudioRef.current) {
-      const audioEl = document.createElement('audio');
-      audioEl.loop = false;
-      audioEl.setAttribute('playsinline', 'true');
-
-      audioEl.addEventListener('ended', () => {
-        console.log('[DJ] Lagu berakhir, auto-next...');
-        playNextTrackRef.current?.();
-      });
-
-      musicAudioRef.current = audioEl;
-
-      const sourceNode = ctx.createMediaElementSource(audioEl);
-      musicSourceNodeRef.current = sourceNode;
-
-      const gainNode = ctx.createGain();
-      gainNode.gain.setValueAtTime(musicVolume, ctx.currentTime);
-      musicGainNodeRef.current = gainNode;
-
-      sourceNode.connect(gainNode);
-
-      // Cabang 1: Diarahkan ke audioContext.destination (speaker/headset HP Kapten)
-      gainNode.connect(ctx.destination);
-
-      // Cabang 2: Diarahkan ke MediaStreamAudioDestinationNode (WebRTC P2P stream ke rider lain)
-      if (mixedDestinationRef.current) {
-        gainNode.connect(mixedDestinationRef.current);
-      }
+  // Sinkronisasi gain mixed music saat isDjMode, isMusicPlaying, atau musicVolume berubah
+  // Auto-ducking dinonaktifkan sesuai permintaan: volume siaran musik murni stabil mengikuti slider volume
+  useEffect(() => {
+    if (musicMixedGainNodeRef.current && audioContextRef.current) {
+      const baseBroadcastVolume = musicVolume * 0.70;
+      const targetGain = isDjMode && isMusicPlaying ? Math.max(0, Math.min(1, baseBroadcastVolume)) : 0.0;
+      const ctx = audioContextRef.current;
+      musicMixedGainNodeRef.current.gain.cancelScheduledValues(ctx.currentTime);
+      musicMixedGainNodeRef.current.gain.linearRampToValueAtTime(
+        targetGain,
+        ctx.currentTime + 0.05
+      );
     }
-  }, [musicVolume]);
+  }, [isDjMode, isMusicPlaying, musicVolume]);
 
-  // Sort playlist
+  // Handle Manual Input Device Selection
+  const handleSelectInputDevice = useCallback(
+    async (deviceId: string) => {
+      setSelectedInputId(deviceId);
+      await restartAudioStream(deviceId);
+    },
+    [restartAudioStream]
+  );
+
+  // Handle Manual Output Device Selection
+  const handleSelectOutputDevice = useCallback(
+    async (deviceId: string) => {
+      setSelectedOutputId(deviceId);
+      await applyAudioSinkId(deviceId);
+      showDeviceToast(
+        deviceId ? '🔊 Output dialihkan ke perangkat yang dipilih' : '🔊 Output mengikuti rute default'
+      );
+    },
+    [applyAudioSinkId, showDeviceToast]
+  );
+
+  // Sort playlist helper
   const applySort = useCallback(
-    (tracks: MusicTrack[], mode: 'NAME' | 'SHUFFLE' | 'DATE') => {
-      let sorted = [...tracks];
-      if (mode === 'NAME') {
-        sorted.sort((a, b) => a.name.localeCompare(b.name));
-      } else if (mode === 'SHUFFLE') {
-        sorted.sort(() => Math.random() - 0.5);
-      } else if (mode === 'DATE') {
+    (tracks: MusicTrack[], sortType: 'NAME' | 'SHUFFLE' | 'DATE') => {
+      const sorted = [...tracks];
+      if (sortType === 'NAME') {
+        sorted.sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true }));
+      } else if (sortType === 'SHUFFLE') {
+        for (let i = sorted.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [sorted[i], sorted[j]] = [sorted[j], sorted[i]];
+        }
+      } else if (sortType === 'DATE') {
         sorted.sort((a, b) => b.lastModified - a.lastModified);
       }
       return sorted;
@@ -1102,11 +1631,97 @@ export function useIntercomAudio({
     [applySort]
   );
 
-  // Play a specific track index
+  // Claim DJ Seat (First-Come First-Served lock via server with Stale Detection)
+  const claimDjSeat = useCallback(async (): Promise<boolean> => {
+    // Periksa apakah rider yang tercatat sebagai DJ masih ada di dalam room
+    const isPreviousDjPresent = activeDjState?.activeDjId
+      ? knownRoomUsersRef.current.includes(activeDjState.activeDjId)
+      : false;
+
+    // Jika terkunci oleh rider lain TAPI rider tersebut masih ada di room
+    if (isDjLockedByOther && isPreviousDjPresent) {
+      showDeviceToast(`🔒 DJ sedang dikontrol oleh ${activeDjState?.activeDjName || 'rider lain'}`);
+      return false;
+    }
+
+    if (socket?.connected) {
+      if (isDjLockedByOther && !isPreviousDjPresent) {
+        showDeviceToast('⚡ Mengambil alih kursi DJ dari rider yang telah keluar...');
+      }
+      socket.emit('claim-dj', (res?: { success: boolean; message?: string }) => {
+        if (res && !res.success) {
+          showDeviceToast(res.message || '⚠️ Gagal mengambil alih kursi DJ');
+          setIsDjMode(false);
+        } else {
+          setIsDjMode(true);
+          showDeviceToast('👑 Anda sekarang menjadi DJ Kapten');
+        }
+      });
+      setIsDjMode(true);
+      return true;
+    }
+    return false;
+  }, [isDjLockedByOther, activeDjState?.activeDjId, activeDjState?.activeDjName, socket, showDeviceToast]);
+
+  // Release DJ Seat so another rider can claim
+  const releaseDjSeat = useCallback(() => {
+    if (socket?.connected) {
+      socket.emit('release-dj');
+    }
+    if (musicAudioRef.current) {
+      musicAudioRef.current.pause();
+      musicAudioRef.current.currentTime = 0;
+    }
+    setIsMusicPlaying(false);
+    setMusicTrackTitle('');
+    setCurrentTrackIndex(-1);
+    setIsDjMode(false);
+    showDeviceToast('Status DJ Kapten dilepaskan');
+  }, [socket, showDeviceToast]);
+
+  // Force Reset / Ambil Alih DJ Lock jika ada kendala user keluar
+  const forceResetDjLock = useCallback(() => {
+    if (socket?.connected) {
+      socket.emit('force-release-dj', (res?: { success: boolean }) => {
+        if (res?.success) {
+          showDeviceToast('🔄 Kursi DJ Kapten berhasil direset & siap diklaim');
+        }
+      });
+    }
+    if (setActiveDjState) {
+      setActiveDjState({
+        activeDjId: null,
+        activeDjName: null,
+        isDjActive: false,
+        isPlaying: false,
+        trackTitle: '',
+      });
+    }
+    if (musicAudioRef.current) {
+      musicAudioRef.current.pause();
+      musicAudioRef.current.currentTime = 0;
+    }
+    setIsMusicPlaying(false);
+    setIsDjMode(false);
+    showDeviceToast('🔄 Kursi DJ Kapten direset');
+  }, [socket, setActiveDjState, showDeviceToast]);
+
+  // Putar lagu pada indeks tertentu
   const playTrackAtIndex = useCallback(
     async (index: number) => {
       if (index < 0 || index >= playlist.length) return;
-      ensureDJNodes();
+
+      if (isDjLockedByOther) {
+        showDeviceToast(`🔒 DJ sedang dikontrol oleh ${activeDjState?.activeDjName || 'rider lain'}`);
+        return;
+      }
+
+      // Automatically ensure DJ seat is claimed before broadcasting audio
+      if (!isDjOwner && socket?.connected) {
+        socket.emit('claim-dj');
+      }
+
+      ensureAudioPipeline(localStreamRef.current || undefined);
       await resumeAudioContext();
 
       const track = playlist[index];
@@ -1114,175 +1729,370 @@ export function useIntercomAudio({
       setMusicTrackTitle(track.title);
 
       if (musicAudioRef.current) {
-        if (track.url) {
-          musicAudioRef.current.src = track.url;
-        } else if (track.file) {
-          musicAudioRef.current.src = URL.createObjectURL(track.file);
-        }
         try {
+          musicAudioRef.current.volume = musicVolume;
+        } catch {}
+        if (track.file) {
+          musicAudioRef.current.removeAttribute('crossorigin');
+          musicAudioRef.current.src = URL.createObjectURL(track.file);
+        } else if (track.url) {
+          try {
+            const res = await fetch(track.url);
+            const blob = await res.blob();
+            musicAudioRef.current.removeAttribute('crossorigin');
+            musicAudioRef.current.src = URL.createObjectURL(blob);
+          } catch (e) {
+            console.warn('[DJ] Blob fetch note:', e);
+            musicAudioRef.current.removeAttribute('crossorigin');
+            musicAudioRef.current.src = track.url;
+          }
+        }
+
+        try {
+          isMusicPlayingRef.current = true;
           await musicAudioRef.current.play();
           setIsMusicPlaying(true);
-          socket?.emit('dj-music-state', { isPlaying: true, trackTitle: track.title });
+          setIsDjMode(true);
+          unpauseAllRemoteAudios();
+          socket?.emit('dj-music-state', {
+            isPlaying: true,
+            trackTitle: track.title,
+          });
         } catch (err) {
           console.warn('Track play failed:', err);
         }
       }
     },
-    [playlist, ensureDJNodes, resumeAudioContext, socket]
+    [
+      playlist,
+      isDjLockedByOther,
+      isDjOwner,
+      activeDjState?.activeDjName,
+      showDeviceToast,
+      ensureAudioPipeline,
+      resumeAudioContext,
+      unpauseAllRemoteAudios,
+      socket,
+    ]
   );
 
-  // Muat Lagu Demo Touring Bebas Hak Cipta untuk tes audio
-  const loadDemoTouringTracks = useCallback(() => {
-    const demoTracks: MusicTrack[] = [
-      {
-        title: 'Touring Synth Anthem',
-        name: 'Touring Synth Anthem.mp3',
-        url: 'https://cdn.freesound.org/previews/557/557815_11861866-lq.mp3',
-        lastModified: Date.now() - 1000,
-      },
-      {
-        title: 'Highway Cruiser Lo-Fi',
-        name: 'Highway Cruiser Lo-Fi.mp3',
-        url: 'https://cdn.freesound.org/previews/612/612662_11861866-lq.mp3',
-        lastModified: Date.now() - 2000,
-      },
-      {
-        title: 'Sunset Coast Ride',
-        name: 'Sunset Coast Ride.mp3',
-        url: 'https://cdn.freesound.org/previews/415/415804_5121236-lq.mp3',
-        lastModified: Date.now() - 3000,
-      },
-    ];
+  // Muat Lagu Demo Touring Bebas Masalah (Built-in In-Memory WAV Generator)
+  const loadDemoTouringTracks = useCallback(async () => {
+    if (isDjLockedByOther) {
+      showDeviceToast(`🔒 DJ sedang dikontrol oleh ${activeDjState?.activeDjName || 'rider lain'}`);
+      return;
+    }
 
+    if (!isDjOwner && socket?.connected) {
+      socket.emit('claim-dj');
+    }
+
+    const demoTracks = getBuiltInDemoTracks();
     setOriginalPlaylist(demoTracks);
     setPlaylist(demoTracks);
     setCurrentTrackIndex(0);
     setMusicTrackTitle(demoTracks[0].title);
-    ensureDJNodes();
+    ensureAudioPipeline(localStreamRef.current || undefined);
+    await resumeAudioContext();
     setIsDjMode(true);
-    if (musicAudioRef.current) {
-      musicAudioRef.current.src = demoTracks[0].url!;
-      musicAudioRef.current
-        .play()
-        .then(() => {
-          setIsMusicPlaying(true);
-          socket?.emit('dj-music-state', { isPlaying: true, trackTitle: demoTracks[0].title });
-        })
-        .catch((e) => console.warn('Demo play error:', e));
-    }
-    setDeviceToastMessage('🎵 Lagu Demo Touring dimuat & siap diputar!');
-  }, [ensureDJNodes, socket]);
 
-  // Play next track (auto-next loop)
+    if (musicAudioRef.current && demoTracks[0].file) {
+      try {
+        musicAudioRef.current.volume = musicVolume;
+      } catch {}
+      musicAudioRef.current.removeAttribute('crossorigin');
+      musicAudioRef.current.src = URL.createObjectURL(demoTracks[0].file);
+      try {
+        await musicAudioRef.current.play();
+        setIsMusicPlaying(true);
+        unpauseAllRemoteAudios();
+        socket?.emit('dj-music-state', {
+          isPlaying: true,
+          trackTitle: demoTracks[0].title,
+        });
+      } catch (e) {
+        console.warn('Demo play error:', e);
+      }
+    }
+  }, [
+    isDjLockedByOther,
+    isDjOwner,
+    activeDjState?.activeDjName,
+    showDeviceToast,
+    ensureAudioPipeline,
+    resumeAudioContext,
+    unpauseAllRemoteAudios,
+    socket,
+  ]);
+
+  // Putar lagu berikutnya
   const playNextTrack = useCallback(async () => {
     if (playlist.length === 0) return;
-    const nextIndex = (currentTrackIndex + 1) % playlist.length;
-    await playTrackAtIndex(nextIndex);
-  }, [playlist.length, currentTrackIndex, playTrackAtIndex]);
+    const nextIdx = (currentTrackIndex + 1) % playlist.length;
+    await playTrackAtIndex(nextIdx);
+  }, [currentTrackIndex, playlist.length, playTrackAtIndex]);
 
-  // Play previous track
+  playNextTrackRef.current = playNextTrack;
+
+  // Putar lagu sebelumnya
   const playPrevTrack = useCallback(async () => {
     if (playlist.length === 0) return;
-    const prevIndex = (currentTrackIndex - 1 + playlist.length) % playlist.length;
-    await playTrackAtIndex(prevIndex);
-  }, [playlist.length, currentTrackIndex, playTrackAtIndex]);
+    const prevIdx = (currentTrackIndex - 1 + playlist.length) % playlist.length;
+    await playTrackAtIndex(prevIdx);
+  }, [currentTrackIndex, playlist.length, playTrackAtIndex]);
 
-  useEffect(() => {
-    playNextTrackRef.current = playNextTrack;
-  }, [playNextTrack]);
-
-  // Load files from folder or multiple file picker
-  const loadMusicFiles = useCallback(
-    (files: File[]) => {
-      const audioFiles = files.filter((f) => {
-        const ext = f.name.split('.').pop()?.toLowerCase() || '';
-        return ['mp3', 'aac', 'ogg', 'm4a', 'wav'].includes(ext) || f.type.startsWith('audio/');
-      });
-
-      if (audioFiles.length === 0) return;
-
-      const trackList: MusicTrack[] = audioFiles.map((f) => ({
-        file: f,
-        title: f.name.replace(/\.[^/.]+$/, ''),
-        name: f.name,
-        lastModified: f.lastModified || 0,
-      }));
-
-      setOriginalPlaylist(trackList);
-      const sorted = applySort(trackList, sortMode);
-      setPlaylist(sorted);
-      setCurrentTrackIndex(0);
-      setMusicTrackTitle(sorted[0].title);
-      ensureDJNodes();
-      setIsDjMode(true);
-
-      if (musicAudioRef.current) {
-        musicAudioRef.current.src = URL.createObjectURL(sorted[0].file);
-      }
-    },
-    [sortMode, applySort, ensureDJNodes]
-  );
-
-  // Toggle play / pause
+  // Toggle Play / Pause musik
   const togglePlayMusic = useCallback(async () => {
-    ensureDJNodes();
+    if (isDjLockedByOther) {
+      showDeviceToast(`🔒 DJ sedang dikontrol oleh ${activeDjState?.activeDjName || 'rider lain'}`);
+      return;
+    }
+
+    ensureAudioPipeline(localStreamRef.current || undefined);
     await resumeAudioContext();
 
     if (!musicAudioRef.current) return;
 
     if (isMusicPlaying) {
+      isMusicPlayingRef.current = false;
       musicAudioRef.current.pause();
       setIsMusicPlaying(false);
-      socket?.emit('dj-music-state', { isPlaying: false, trackTitle: musicTrackTitle });
+      socket?.emit('dj-music-state', {
+        isPlaying: false,
+        trackTitle: musicTrackTitle,
+      });
     } else {
+      if (!isDjOwner && socket?.connected) {
+        socket.emit('claim-dj');
+      }
       if (currentTrackIndex === -1 && playlist.length > 0) {
         await playTrackAtIndex(0);
-        return;
-      }
-      try {
-        await musicAudioRef.current.play();
-        setIsMusicPlaying(true);
-        socket?.emit('dj-music-state', { isPlaying: true, trackTitle: musicTrackTitle });
-      } catch (err) {
-        console.warn('Music play failed:', err);
+      } else {
+        try {
+          if (musicAudioRef.current) {
+            try {
+              musicAudioRef.current.volume = musicVolume;
+            } catch {}
+          }
+          isMusicPlayingRef.current = true;
+          await musicAudioRef.current.play();
+          setIsMusicPlaying(true);
+          setIsDjMode(true);
+          unpauseAllRemoteAudios();
+          socket?.emit('dj-music-state', {
+            isPlaying: true,
+            trackTitle: musicTrackTitle,
+          });
+        } catch (err) {
+          console.warn('Resume play failed:', err);
+        }
       }
     }
-  }, [ensureDJNodes, resumeAudioContext, isMusicPlaying, musicTrackTitle, currentTrackIndex, playlist.length, playTrackAtIndex, socket]);
+  }, [
+    isDjLockedByOther,
+    isDjOwner,
+    activeDjState?.activeDjName,
+    showDeviceToast,
+    ensureAudioPipeline,
+    resumeAudioContext,
+    isMusicPlaying,
+    socket,
+    musicTrackTitle,
+    currentTrackIndex,
+    playlist.length,
+    playTrackAtIndex,
+    unpauseAllRemoteAudios,
+  ]);
 
-  // Stop music
+  // Hentikan musik sepenuhnya
   const stopMusic = useCallback(() => {
+    isMusicPlayingRef.current = false;
     if (musicAudioRef.current) {
       musicAudioRef.current.pause();
       musicAudioRef.current.currentTime = 0;
-      setIsMusicPlaying(false);
-      socket?.emit('dj-music-state', { isPlaying: false, trackTitle: '' });
     }
+    setIsMusicPlaying(false);
+    setMusicTrackTitle('');
+    setCurrentTrackIndex(-1);
+    socket?.emit('dj-music-state', {
+      isPlaying: false,
+      trackTitle: '',
+    });
   }, [socket]);
 
-  // Adjust baseline DJ volume (gain statis normal tanpa ducking)
+  // Load User Music Files
+  const loadMusicFiles = useCallback(
+    async (files: FileList | File[]) => {
+      if (isDjLockedByOther) {
+        showDeviceToast(`🔒 DJ sedang dikontrol oleh ${activeDjState?.activeDjName || 'rider lain'}`);
+        return;
+      }
+
+      const audioFiles = Array.from(files).filter(
+        (f) =>
+          f.type.startsWith('audio/') ||
+          /\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(f.name)
+      );
+
+      if (audioFiles.length === 0) return;
+
+      if (!isDjOwner && socket?.connected) {
+        socket.emit('claim-dj');
+      }
+
+      const tracks: MusicTrack[] = audioFiles.map((file) => {
+        const cleanTitle = file.name.replace(/\.[^/.]+$/, '');
+        return {
+          title: cleanTitle,
+          name: file.name,
+          file,
+          lastModified: file.lastModified,
+        };
+      });
+
+      const sorted = applySort(tracks, sortMode);
+      setOriginalPlaylist(tracks);
+      setPlaylist(sorted);
+      setCurrentTrackIndex(0);
+      setMusicTrackTitle(sorted[0].title);
+
+      ensureAudioPipeline(localStreamRef.current || undefined);
+      await resumeAudioContext();
+      setIsDjMode(true);
+
+      if (musicAudioRef.current) {
+        try {
+          musicAudioRef.current.volume = musicVolume;
+        } catch {}
+        musicAudioRef.current.removeAttribute('crossorigin');
+        musicAudioRef.current.src = URL.createObjectURL(sorted[0].file!);
+        try {
+          await musicAudioRef.current.play();
+          setIsMusicPlaying(true);
+          unpauseAllRemoteAudios();
+          socket?.emit('dj-music-state', {
+            isPlaying: true,
+            trackTitle: sorted[0].title,
+          });
+        } catch (err) {
+          console.warn('Auto play failed:', err);
+        }
+      }
+    },
+    [
+      isDjLockedByOther,
+      isDjOwner,
+      activeDjState?.activeDjName,
+      showDeviceToast,
+      applySort,
+      sortMode,
+      ensureAudioPipeline,
+      resumeAudioContext,
+      unpauseAllRemoteAudios,
+      socket,
+    ]
+  );
+
+  // Toggle DJ Mode (Exclusive 1-Rider Lock)
+  const toggleDjMode = useCallback(
+    (enable?: boolean) => {
+      const shouldEnable = enable !== undefined ? enable : !isDjMode;
+      if (shouldEnable) {
+        if (isDjLockedByOther) {
+          showDeviceToast(`🔒 DJ sedang dikontrol oleh ${activeDjState?.activeDjName || 'rider lain'}`);
+          return;
+        }
+        claimDjSeat();
+      } else {
+        releaseDjSeat();
+      }
+    },
+    [isDjMode, isDjLockedByOther, activeDjState?.activeDjName, claimDjSeat, releaseDjSeat, showDeviceToast]
+  );
+
+  // Ubah volume musik (berlaku untuk Kapten lokal, siaran rombongan, dan penerimaan di helm setiap rider)
   const handleSetMusicVolume = useCallback(
     (vol: number) => {
       const clamped = Math.max(0, Math.min(1, vol));
       setMusicVolume(clamped);
-      if (musicGainNodeRef.current && audioContextRef.current) {
-        musicGainNodeRef.current.gain.setValueAtTime(
-          clamped,
-          audioContextRef.current.currentTime
-        );
+
+      try {
+        localStorage.setItem('gibah_music_volume', clamped.toString());
+      } catch {}
+
+      // Update elemen audio HTML jika ada
+      if (musicAudioRef.current) {
+        try {
+          musicAudioRef.current.volume = clamped;
+        } catch {}
+      }
+
+      if (audioContextRef.current) {
+        const ctx = audioContextRef.current;
+
+        // 1. Jika DJ lokal, sesuaikan speaker/headset DJ
+        if (musicGainNodeRef.current) {
+          musicGainNodeRef.current.gain.cancelScheduledValues(ctx.currentTime);
+          musicGainNodeRef.current.gain.linearRampToValueAtTime(
+            clamped,
+            ctx.currentTime + 0.05
+          );
+        }
+
+        // 2. Jika DJ sedang siaran musik, sesuaikan juga siaran ke seluruh rombongan secara proporsional & stabil
+        if (musicMixedGainNodeRef.current && isDjMode && isMusicPlaying) {
+          const targetBroadcastGain = Math.max(0, Math.min(1, clamped * 0.70));
+          musicMixedGainNodeRef.current.gain.cancelScheduledValues(ctx.currentTime);
+          musicMixedGainNodeRef.current.gain.linearRampToValueAtTime(
+            targetBroadcastGain,
+            ctx.currentTime + 0.05
+          );
+        }
       }
     },
-    []
+    [isDjMode, isMusicPlaying]
   );
 
-  // 7. Direct Audio Routing: Auto-ducking dinonaktifkan, volume musik & interkom statis
+  // Update volume remote interkom (WebAudio Gain Node per rider: suara teman independen dari musik)
   useEffect(() => {
-    if (!musicGainNodeRef.current || !audioContextRef.current || !isMusicPlaying) return;
+    if (audioContextRef.current) {
+      const ctx = audioContextRef.current;
+      (Object.entries(remoteGainNodesRef.current) as [string, GainNode][]).forEach(([, gainNode]) => {
+        if (gainNode) {
+          try {
+            gainNode.gain.cancelScheduledValues(ctx.currentTime);
+            gainNode.gain.linearRampToValueAtTime(receiverVolume, ctx.currentTime + 0.05);
+          } catch {}
+        }
+      });
+    }
+  }, [receiverVolume]);
 
+  // Update Mic Preamp Boost secara real-time (Rentang 50% - 150%)
+  useEffect(() => {
+    if (micPreampGainNodeRef.current && audioContextRef.current) {
+      const ctx = audioContextRef.current;
+      const effectiveGain = Math.max(0.5, Math.min(1.5, micBoost));
+      micPreampGainNodeRef.current.gain.cancelScheduledValues(ctx.currentTime);
+      micPreampGainNodeRef.current.gain.linearRampToValueAtTime(effectiveGain, ctx.currentTime + 0.05);
+    }
+  }, [micBoost]);
+
+  // Sinkronkan volume musik lokal Kapten saat state berubah secara halus
+  useEffect(() => {
+    if (!musicGainNodeRef.current || !audioContextRef.current) return;
     const ctx = audioContextRef.current;
-    // Tetap pada volume normal yang dipilih user
-    setIsDucked(false);
-    musicGainNodeRef.current.gain.setValueAtTime(musicVolume, ctx.currentTime);
-  }, [musicVolume, isMusicPlaying]);
+    musicGainNodeRef.current.gain.cancelScheduledValues(ctx.currentTime);
+    musicGainNodeRef.current.gain.linearRampToValueAtTime(
+      musicVolume,
+      ctx.currentTime + 0.05
+    );
+    if (musicAudioRef.current) {
+      try {
+        musicAudioRef.current.volume = musicVolume;
+      } catch {}
+    }
+  }, [musicVolume]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -1290,30 +2100,52 @@ export function useIntercomAudio({
       if (vadIntervalRef.current) {
         clearInterval(vadIntervalRef.current);
       }
+      if (keepAliveNodeRef.current) {
+        try {
+          keepAliveNodeRef.current.osc.stop();
+          keepAliveNodeRef.current.osc.disconnect();
+        } catch {}
+        keepAliveNodeRef.current = null;
+      }
       if (musicAudioRef.current) {
         musicAudioRef.current.pause();
         musicAudioRef.current.src = '';
       }
-      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-        try {
-          audioContextRef.current.close();
-        } catch {}
-      }
-      for (const pc of Object.values(peersRef.current) as RTCPeerConnection[]) {
-        pc.close();
-      }
-      for (const audio of Object.values(audioElementsRef.current) as HTMLAudioElement[]) {
-        audio.pause();
-        audio.srcObject = null;
-        if (audio.parentNode) {
-          audio.parentNode.removeChild(audio);
+      (Object.values(peersRef.current) as RTCPeerConnection[]).forEach((pc) => pc.close());
+      (Object.values(remoteSourceNodesRef.current) as MediaStreamAudioSourceNode[]).forEach((node) => {
+        if (node) {
+          try {
+            node.disconnect();
+          } catch {}
         }
+      });
+      remoteSourceNodesRef.current = {};
+      (Object.values(remoteGainNodesRef.current) as GainNode[]).forEach((node) => {
+        if (node) {
+          try {
+            node.disconnect();
+          } catch {}
+        }
+      });
+      remoteGainNodesRef.current = {};
+      if (remoteMasterLimiterRef.current) {
+        try {
+          remoteMasterLimiterRef.current.disconnect();
+        } catch {}
+        remoteMasterLimiterRef.current = null;
       }
-      if (localStream) {
-        localStream.getTracks().forEach((t) => t.stop());
+      (Object.values(audioElementsRef.current) as HTMLAudioElement[]).forEach((audio) => {
+        audio.srcObject = null;
+        audio.remove();
+      });
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        audioContextRef.current.close().catch(() => {});
       }
     };
-  }, [localStream]);
+  }, []);
 
   return {
     audioStatus,
@@ -1327,18 +2159,40 @@ export function useIntercomAudio({
     endPtt,
     resumeAudioContext,
 
-    // Audio Output Mode (Speakerphone vs Headset)
+    // Audio Output Mode & Device Management
     audioOutputMode,
-    toggleAudioOutput,
-    updateAudioOutput,
+    inputDevices,
+    outputDevices,
+    selectedInputId,
+    selectedOutputId,
+    activeDeviceLabel,
+    selectInputDevice: handleSelectInputDevice,
+    selectOutputDevice: handleSelectOutputDevice,
+    forceFixAudio,
+    isFixingAudio,
+    connectedPeersCount,
+    syncAllPeers,
+    toggleAudioOutput: () => {},
+    updateAudioOutput: async () => {},
 
-    // Audio Focus & Device Toast
+    // Audio Device Toast
     deviceToastMessage,
     dismissDeviceToast: () => setDeviceToastMessage(null),
 
-    // DJ Kapten features & Playlist
+    // Mic Boost & Sensitivity
+    micBoost,
+    setMicBoost,
+
+    // DJ Kapten features & Playlist (Single-DJ Lock Protected)
     isDjMode,
+    isDjOwner,
+    isDjLockedByOther,
+    claimDjSeat,
+    releaseDjSeat,
+    forceResetDjLock,
+    resetDjLock: forceResetDjLock,
     setIsDjMode,
+    toggleDjMode,
     musicTrackTitle,
     isMusicPlaying,
     musicVolume,

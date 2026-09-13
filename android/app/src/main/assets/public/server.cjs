@@ -39,6 +39,8 @@ var io = new import_socket.Server(server, {
 });
 app.use(import_express.default.json());
 var riders = {};
+var roomDJs = {};
+var djDisconnectTimers = {};
 app.get("/api/health", (_req, res) => {
   const activeRooms = new Set(Object.values(riders).map((r) => r.roomId));
   res.json({
@@ -105,6 +107,24 @@ io.on("connection", (socket) => {
       roomId,
       users: existingInRoom
     });
+    const existingDj = roomDJs[roomId];
+    if (existingDj && existingDj.isDjActive && existingDj.activeDjName && existingDj.activeDjName.trim().toLowerCase() === username.trim().toLowerCase()) {
+      if (djDisconnectTimers[roomId]) {
+        console.log(`[DJ RECOVERED] DJ ${username} reconnected within grace period! Restoring DJ seat for room ${roomId}`);
+        clearTimeout(djDisconnectTimers[roomId]);
+        delete djDisconnectTimers[roomId];
+      }
+      existingDj.activeDjId = socket.id;
+      io.to(roomId).emit("dj-music-state", existingDj);
+    }
+    const currentDj = roomDJs[roomId] || {
+      activeDjId: null,
+      activeDjName: null,
+      isDjActive: false,
+      isPlaying: false,
+      trackTitle: ""
+    };
+    socket.emit("dj-music-state", currentDj);
     socket.to(roomId).emit("user-connected", {
       userId: socket.id,
       username,
@@ -119,7 +139,7 @@ io.on("connection", (socket) => {
       signal: data.signal
     });
   });
-  socket.on("update-metadata", (data) => {
+  const handleMetadataUpdate = (data) => {
     const rider = riders[socket.id];
     if (!rider) return;
     if (data.coords) rider.coords = data.coords;
@@ -139,7 +159,9 @@ io.on("connection", (socket) => {
       isMuted: rider.isMuted,
       isSpeaking: rider.isSpeaking
     });
-  });
+  };
+  socket.on("update-metadata", handleMetadataUpdate);
+  socket.on("metadata-update", handleMetadataUpdate);
   socket.on("voice-state", (data) => {
     const rider = riders[socket.id];
     if (!rider) return;
@@ -155,35 +177,162 @@ io.on("connection", (socket) => {
   socket.on("convoy-alert", (data) => {
     const rider = riders[socket.id];
     if (!rider) return;
+    let alertType = "INFO";
+    let alertTitle = "Peringatan Konvoi";
+    let alertMessage = "Peringatan!";
+    let alertCoords = rider.coords;
+    if (typeof data === "string") {
+      alertTitle = data;
+      alertMessage = data;
+    } else if (data && typeof data === "object") {
+      if (data.type) alertType = data.type;
+      if (data.title) alertTitle = data.title;
+      if (data.message) alertMessage = data.message;
+      if (!data.title && data.message) alertTitle = data.message;
+      if (data.coords) alertCoords = data.coords;
+    }
     const alertPayload = {
       id: `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       userId: socket.id,
       username: rider.username,
-      type: data.type || "INFO",
-      message: data.message || "Alert!",
-      coords: data.coords || rider.coords,
+      type: alertType,
+      title: alertTitle,
+      message: alertMessage,
+      coords: alertCoords,
       timestamp: Date.now()
     };
+    console.log(`[CONVOY ALERT] ${rider.username} (${socket.id}) in room ${rider.roomId}: [${alertType}] ${alertTitle} - ${alertMessage}`);
     io.to(rider.roomId).emit("convoy-alert", alertPayload);
+  });
+  socket.on("claim-dj", (callback) => {
+    const rider = riders[socket.id];
+    if (!rider) return;
+    const roomId = rider.roomId;
+    const current = roomDJs[roomId];
+    let isStale = false;
+    if (current && current.isDjActive && current.activeDjId) {
+      const activeDjSocket = io.sockets.sockets.get(current.activeDjId);
+      const activeDjRider = riders[current.activeDjId];
+      if (!activeDjSocket || !activeDjSocket.connected || !activeDjRider || activeDjRider.roomId !== roomId) {
+        isStale = true;
+        console.log(`[DJ STALE DETECTED] Previous DJ ${current.activeDjName} (${current.activeDjId}) is no longer connected in room ${roomId}. Auto-releasing lock.`);
+      }
+    }
+    const isSameUserReclaiming = current && current.activeDjName && current.activeDjName.trim().toLowerCase() === rider.username.trim().toLowerCase();
+    if (current && current.isDjActive && current.activeDjId && current.activeDjId !== socket.id && !isStale && !isSameUserReclaiming) {
+      const busyMessage = `DJ sedang dikontrol oleh ${current.activeDjName || "rider lain"}.`;
+      console.log(`[DJ REJECT] ${rider.username} attempted to claim DJ in ${roomId}, but legitimately held by ${current.activeDjName}`);
+      if (typeof callback === "function") {
+        callback({ success: false, djState: current, message: busyMessage });
+      }
+      socket.emit("dj-claim-rejected", { message: busyMessage, djState: current });
+      return;
+    }
+    if (djDisconnectTimers[roomId]) {
+      clearTimeout(djDisconnectTimers[roomId]);
+      delete djDisconnectTimers[roomId];
+    }
+    const newDjState = {
+      activeDjId: socket.id,
+      activeDjName: rider.username,
+      isDjActive: true,
+      isPlaying: isSameUserReclaiming && current ? current.isPlaying : false,
+      trackTitle: isSameUserReclaiming && current ? current.trackTitle : ""
+    };
+    roomDJs[roomId] = newDjState;
+    console.log(`[DJ CLAIMED] ${rider.username} (${socket.id}) is now the exclusive DJ Kapten for room ${roomId}`);
+    io.to(roomId).emit("dj-music-state", newDjState);
+    if (typeof callback === "function") {
+      callback({ success: true, djState: newDjState });
+    }
+  });
+  socket.on("release-dj", () => {
+    const rider = riders[socket.id];
+    if (!rider) return;
+    const roomId = rider.roomId;
+    const current = roomDJs[roomId];
+    if (djDisconnectTimers[roomId]) {
+      clearTimeout(djDisconnectTimers[roomId]);
+      delete djDisconnectTimers[roomId];
+    }
+    if (current && (current.activeDjId === socket.id || current.activeDjName === rider.username)) {
+      console.log(`[DJ RELEASED] ${rider.username} released DJ Kapten seat for room ${roomId}`);
+      const releasedState = {
+        activeDjId: null,
+        activeDjName: null,
+        isDjActive: false,
+        isPlaying: false,
+        trackTitle: ""
+      };
+      roomDJs[roomId] = releasedState;
+      io.to(roomId).emit("dj-music-state", releasedState);
+    }
+  });
+  socket.on("force-release-dj", (callback) => {
+    const rider = riders[socket.id];
+    if (!rider) return;
+    const roomId = rider.roomId;
+    if (djDisconnectTimers[roomId]) {
+      clearTimeout(djDisconnectTimers[roomId]);
+      delete djDisconnectTimers[roomId];
+    }
+    console.log(`[DJ FORCE-RELEASE] DJ seat in room ${roomId} reset by ${rider.username}`);
+    const releasedState = {
+      activeDjId: null,
+      activeDjName: null,
+      isDjActive: false,
+      isPlaying: false,
+      trackTitle: ""
+    };
+    roomDJs[roomId] = releasedState;
+    io.to(roomId).emit("dj-music-state", releasedState);
+    if (typeof callback === "function") {
+      callback({ success: true });
+    }
   });
   socket.on("dj-music-state", (data) => {
     const rider = riders[socket.id];
     if (!rider) return;
-    socket.to(rider.roomId).emit("dj-music-state", {
-      userId: socket.id,
-      djName: rider.username,
-      isPlaying: !!data.isPlaying,
-      trackTitle: data.trackTitle || "Musik Touring"
-    });
+    const roomId = rider.roomId;
+    const current = roomDJs[roomId];
+    if (current && current.activeDjId === socket.id) {
+      current.isPlaying = !!data.isPlaying;
+      if (data.trackTitle !== void 0) {
+        current.trackTitle = data.trackTitle;
+      }
+      io.to(roomId).emit("dj-music-state", current);
+    }
   });
   socket.on("disconnect", () => {
     const rider = riders[socket.id];
-    if (rider) {
-      const { roomId, username } = rider;
-      console.log(`[LEAVE] ${username} (${socket.id}) disconnected from ${roomId}`);
-      socket.to(roomId).emit("user-disconnected", socket.id);
-      delete riders[socket.id];
+    const roomId = rider ? rider.roomId : null;
+    const username = rider ? rider.username : "Unknown";
+    console.log(`[LEAVE] ${username} (${socket.id}) disconnected`);
+    for (const [rId, dj] of Object.entries(roomDJs)) {
+      if (dj.isDjActive && (dj.activeDjId === socket.id || rider && dj.activeDjName === rider.username)) {
+        console.log(`[DJ GRACE PERIOD] Active DJ ${username} (${socket.id}) disconnected. Starting 25s grace period for room ${rId}...`);
+        if (djDisconnectTimers[rId]) {
+          clearTimeout(djDisconnectTimers[rId]);
+        }
+        djDisconnectTimers[rId] = setTimeout(() => {
+          console.log(`[DJ AUTO-RELEASE] Grace period expired for room ${rId}. Freeing DJ seat.`);
+          delete djDisconnectTimers[rId];
+          const releasedState = {
+            activeDjId: null,
+            activeDjName: null,
+            isDjActive: false,
+            isPlaying: false,
+            trackTitle: ""
+          };
+          roomDJs[rId] = releasedState;
+          io.to(rId).emit("dj-music-state", releasedState);
+        }, 25e3);
+      }
     }
+    if (roomId) {
+      io.to(roomId).emit("user-disconnected", { userId: socket.id });
+    }
+    delete riders[socket.id];
   });
 });
 setInterval(() => {
@@ -191,6 +340,20 @@ setInterval(() => {
   for (const [id, rider] of Object.entries(riders)) {
     if (now - rider.lastUpdated > 10 * 60 * 1e3) {
       console.log(`[CLEANUP] Purged inactive rider: ${rider.username}`);
+      const roomId = rider.roomId;
+      const currentDj = roomDJs[roomId];
+      if (currentDj && currentDj.activeDjId === id) {
+        console.log(`[DJ AUTO-RELEASE] Inactive DJ ${rider.username} purged. Freeing DJ seat for room ${roomId}`);
+        const releasedState = {
+          activeDjId: null,
+          activeDjName: null,
+          isDjActive: false,
+          isPlaying: false,
+          trackTitle: ""
+        };
+        roomDJs[roomId] = releasedState;
+        io.to(roomId).emit("dj-music-state", releasedState);
+      }
       delete riders[id];
     }
   }

@@ -1,20 +1,19 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   Mic,
   MicOff,
   Radio,
-  Sun,
-  SunDim,
   AlertTriangle,
   BatteryCharging,
   Users,
   Volume2,
   VolumeX,
-  RotateCcw,
-  Headphones,
   Music,
+  Zap,
+  Headphones,
+  Bluetooth,
 } from 'lucide-react';
-import { IntercomMode, AudioOutputMode } from '../types';
+import { IntercomMode } from '../types';
 
 interface RiderControlsProps {
   mode: IntercomMode;
@@ -22,18 +21,19 @@ interface RiderControlsProps {
   isMuted: boolean;
   isTransmitting: boolean;
   isSpeaking: boolean;
-  isWakeLocked: boolean;
-  onToggleWakeLock: () => void;
+  isWakeLocked?: boolean;
+  onToggleWakeLock?: () => void;
   onToggleMute: () => void;
-  onResetAudio?: () => void;
-  audioOutputMode: AudioOutputMode;
-  onToggleAudioOutput: () => void;
   onPttStart: () => void;
   onPttEnd: () => void;
   onOpenAlerts: () => void;
   onOpenRiderList: () => void;
   onOpenBatteryGuide: () => void;
   onOpenDJModal: () => void;
+  onOpenBooster?: () => void;
+  onOpenAudioDevices?: () => void;
+  activeDeviceLabel?: string;
+  receiverVolume?: number;
   isDjActive: boolean;
   isPlayingMusic: boolean;
   connectedCount: number;
@@ -45,114 +45,120 @@ export const RiderControls: React.FC<RiderControlsProps> = ({
   isMuted,
   isTransmitting,
   isSpeaking,
-  isWakeLocked,
-  onToggleWakeLock,
   onToggleMute,
-  onResetAudio,
-  audioOutputMode,
-  onToggleAudioOutput,
   onPttStart,
   onPttEnd,
   onOpenAlerts,
   onOpenRiderList,
   onOpenBatteryGuide,
   onOpenDJModal,
+  onOpenBooster,
+  onOpenAudioDevices,
+  activeDeviceLabel = 'Audio HP',
+  receiverVolume = 1.35,
   isDjActive,
   isPlayingMusic,
   connectedCount,
 }) => {
-  const [isResetting, setIsResetting] = useState(false);
-
-  const handleResetClick = async () => {
-    if (!onResetAudio || isResetting) return;
-    setIsResetting(true);
-    try {
-      await onResetAudio();
-    } finally {
-      setTimeout(() => setIsResetting(false), 1200);
-    }
-  };
+  const isBluetooth =
+    activeDeviceLabel.toLowerCase().includes('bluetooth') ||
+    activeDeviceLabel.toLowerCase().includes('headset') ||
+    activeDeviceLabel.toLowerCase().includes('wireless') ||
+    activeDeviceLabel.toLowerCase().includes('sena') ||
+    activeDeviceLabel.toLowerCase().includes('cardo') ||
+    activeDeviceLabel.toLowerCase().includes('ejeas') ||
+    activeDeviceLabel.toLowerCase().includes('freedconn');
 
   return (
-    <div className="w-full bg-zinc-950/95 backdrop-blur-lg border-t border-zinc-800/80 px-3 pt-3 pb-safe z-30 flex flex-col gap-2.5">
-      {/* Top Quick Action Bar */}
-      <div className="flex items-center justify-between gap-1.5 sm:gap-2">
+    <div className="w-full bg-zinc-950/95 backdrop-blur-lg border-t border-zinc-800/80 px-2 sm:px-3 pt-2.5 sm:pt-3 pb-safe z-30 flex flex-col gap-2 sm:gap-2.5">
+      {/* Top Quick Action Bar - Proportional 6-Column Responsive Grid (No Overflow) */}
+      <div className="w-full grid grid-cols-6 gap-1 sm:gap-1.5">
         {/* Mode Toggle (Always ON vs PTT) */}
         <button
           onClick={onToggleMode}
-          className={`flex-1 h-12 px-2.5 sm:px-3 rounded-xl border flex items-center justify-center gap-1.5 sm:gap-2 font-bold text-xs uppercase tracking-wider transition-all active:scale-98 ${
+          className={`h-11 sm:h-12 px-1 sm:px-2 rounded-xl border flex items-center justify-center gap-1 sm:gap-1.5 font-bold text-[10px] sm:text-xs uppercase tracking-wider transition-all active:scale-95 min-w-0 ${
             mode === 'ALWAYS_ON'
               ? 'bg-zinc-900 border-emerald-500 text-emerald-400'
               : 'bg-zinc-900 border-amber-500 text-amber-400'
           }`}
+          title={mode === 'ALWAYS_ON' ? 'Mode: Always-ON (Mic Terus Aktif)' : 'Mode: Push-To-Talk (Tekan Bicara)'}
         >
-          <Radio className="w-4 h-4" />
-          <span>{mode === 'ALWAYS_ON' ? 'Always-ON' : 'Push-To-Talk'}</span>
+          <Radio className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+          <span className="truncate">{mode === 'ALWAYS_ON' ? 'ON' : 'PTT'}</span>
         </button>
 
-        {/* Audio Output Selector (Speakerphone HP vs Headset/Bluetooth) */}
+        {/* Audio Device & Headset Switcher Button */}
+        {onOpenAudioDevices ? (
+          <button
+            onClick={onOpenAudioDevices}
+            className={`h-11 sm:h-12 px-1 sm:px-2 rounded-xl border flex items-center justify-center gap-1 sm:gap-1.5 font-bold text-[10px] sm:text-xs transition-all active:scale-95 min-w-0 ${
+              isBluetooth
+                ? 'bg-purple-950/80 border-purple-500 text-purple-300 shadow-md shadow-purple-950/40'
+                : 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:text-white'
+            }`}
+            title="Pindah Audio / Bluetooth Helm"
+          >
+            {isBluetooth ? (
+              <Bluetooth className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-purple-400 animate-pulse shrink-0" />
+            ) : (
+              <Headphones className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-zinc-400 shrink-0" />
+            )}
+            <span className="truncate hidden xs:inline sm:inline">{isBluetooth ? 'BT' : 'HP'}</span>
+          </button>
+        ) : (
+          <div />
+        )}
+
+        {/* DJ Music Button */}
         <button
-          onClick={onToggleAudioOutput}
-          className={`h-12 px-3 rounded-xl border flex items-center gap-1.5 font-black text-xs uppercase tracking-wider transition-all active:scale-95 ${
-            audioOutputMode === 'speaker'
-              ? 'bg-blue-950/80 border-blue-500 text-blue-300 shadow-md shadow-blue-950/50'
-              : 'bg-indigo-950/80 border-indigo-500 text-indigo-300 shadow-md shadow-indigo-950/50'
+          onClick={onOpenDJModal}
+          className={`h-11 sm:h-12 px-1 sm:px-2 rounded-xl border flex items-center justify-center gap-1 sm:gap-1.5 font-bold text-[10px] sm:text-xs transition-all active:scale-95 min-w-0 ${
+            isDjActive || isPlayingMusic
+              ? 'bg-purple-950/80 border-purple-500 text-purple-300 shadow-md shadow-purple-950/40'
+              : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
           }`}
-          title={audioOutputMode === 'speaker' ? 'Output: Speaker HP (Bawaan)' : 'Output: Headset / Bluetooth Helm'}
+          title="DJ Musik (Musik Bersama)"
         >
-          {audioOutputMode === 'speaker' ? (
-            <Volume2 className="w-4 h-4 text-blue-400" />
-          ) : (
-            <Headphones className="w-4 h-4 text-indigo-400" />
-          )}
-          <span>{audioOutputMode === 'speaker' ? 'Speaker' : 'Headset'}</span>
+          <Music className={`w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 ${isPlayingMusic ? 'text-purple-400 animate-pulse' : ''}`} />
+          <span className="truncate hidden xs:inline sm:inline">DJ</span>
         </button>
 
-        {/* Screen Wake Lock */}
-        <button
-          onClick={onToggleWakeLock}
-          className={`h-12 px-3 rounded-xl border flex items-center gap-1.5 font-bold text-xs transition-all active:scale-95 ${
-            isWakeLocked
-              ? 'bg-amber-950/50 border-amber-500 text-amber-300'
-              : 'bg-zinc-900 border-zinc-800 text-zinc-400'
-          }`}
-          title="Keep Screen Awake"
-        >
-          {isWakeLocked ? <Sun className="w-4 h-4" /> : <SunDim className="w-4 h-4" />}
-          <span className="hidden sm:inline">{isWakeLocked ? 'Wake: ON' : 'Wake: OFF'}</span>
-        </button>
+        {/* Volume & Mic Booster Button */}
+        {onOpenBooster ? (
+          <button
+            onClick={onOpenBooster}
+            className={`h-11 sm:h-12 px-1 sm:px-2 rounded-xl border flex items-center justify-center gap-0.5 sm:gap-1 font-bold text-[10px] sm:text-xs transition-all active:scale-95 min-w-0 ${
+              receiverVolume > 1.0
+                ? 'bg-emerald-950/80 border-emerald-500 text-emerald-300 shadow-md shadow-emerald-950/40'
+                : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+            }`}
+            title="Penguat Volume & Mic Rider"
+          >
+            <Zap className={`w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 ${receiverVolume > 1.0 ? 'text-emerald-400' : 'text-zinc-400'}`} />
+            <span className="font-mono text-[9px] sm:text-[11px] font-black truncate">{Math.round(receiverVolume * 100)}%</span>
+          </button>
+        ) : (
+          <div />
+        )}
 
         {/* Convoy Rider List */}
         <button
           onClick={onOpenRiderList}
-          className="h-12 px-3 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white flex items-center gap-1.5 font-bold text-xs active:scale-95"
+          className="h-11 sm:h-12 px-1 sm:px-2 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white flex items-center justify-center gap-1 sm:gap-1.5 font-bold text-[10px] sm:text-xs active:scale-95 min-w-0"
           title="Daftar Rider"
         >
-          <Users className="w-4 h-4 text-emerald-400" />
-          <span>{connectedCount}</span>
+          <Users className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400 shrink-0" />
+          <span className="font-bold">{connectedCount}</span>
         </button>
 
-        {/* DJ Music Button (Secondary/Access) */}
-        <button
-          onClick={onOpenDJModal}
-          className={`h-12 px-2.5 rounded-xl border flex items-center justify-center font-bold text-xs transition-all active:scale-95 ${
-            isDjActive || isPlayingMusic
-              ? 'bg-purple-950/80 border-purple-500 text-purple-300'
-              : 'bg-zinc-900 border-zinc-800 text-zinc-500 hover:text-zinc-300'
-          }`}
-          title="DJ Musik (Musik Bersama)"
-        >
-          <Music className={`w-4 h-4 ${isPlayingMusic ? 'text-purple-400 animate-pulse' : ''}`} />
-        </button>
-
-        {/* Hazard / Convoy Alert Button */}
+        {/* Hazard / Convoy Alert (Warning) Button */}
         <button
           onClick={onOpenAlerts}
-          className="h-12 px-3 rounded-xl bg-red-950/60 border border-red-600/80 text-red-400 flex items-center gap-1.5 font-black text-xs uppercase tracking-wider active:scale-95 shadow-lg shadow-red-950/40 animate-pulse"
-          title="Kirim Peringatan Bahaya"
+          className="h-11 sm:h-12 px-1 sm:px-2 rounded-xl bg-red-950/80 border border-red-500 text-red-300 hover:text-white flex items-center justify-center gap-1 sm:gap-1.5 font-black text-[10px] sm:text-xs uppercase tracking-wider active:scale-95 shadow-lg shadow-red-950/40 min-w-0"
+          title="Kirim Peringatan Bahaya & Konvoi (Alert)"
         >
-          <AlertTriangle className="w-4 h-4 text-red-500" />
-          <span className="hidden sm:inline">Alert</span>
+          <AlertTriangle className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-red-400 animate-pulse shrink-0" />
+          <span className="truncate">Alert</span>
         </button>
       </div>
 
@@ -170,25 +176,6 @@ export const RiderControls: React.FC<RiderControlsProps> = ({
           {isMuted ? <MicOff className="w-6 h-6 text-red-400" /> : <Mic className="w-6 h-6 text-emerald-400" />}
           <span>{isMuted ? 'Muted' : 'Mic ON'}</span>
         </button>
-
-        {/* Reset Audio Button (Fail-Safe Soft Reload) */}
-        {onResetAudio && (
-          <button
-            onClick={handleResetClick}
-            disabled={isResetting}
-            className={`h-20 w-16 rounded-2xl flex flex-col items-center justify-center gap-1 font-black text-[10px] uppercase tracking-wider transition-all border shadow-lg active:scale-95 ${
-              isResetting
-                ? 'bg-blue-950/70 border-blue-500 text-blue-300 ring-2 ring-blue-400'
-                : 'bg-zinc-900 border-zinc-700 text-blue-400 hover:text-blue-300'
-            }`}
-            title="Reset Mic / Pulihkan Jalur Audio"
-          >
-            <RotateCcw className={`w-5 h-5 text-blue-400 ${isResetting ? 'animate-spin' : ''}`} />
-            <span className="leading-tight text-center">
-              {isResetting ? 'Memulihkan...' : <>Reset<br/>Audio</>}
-            </span>
-          </button>
-        )}
 
         {/* Big PTT / Transmit Button */}
         {mode === 'PTT' ? (

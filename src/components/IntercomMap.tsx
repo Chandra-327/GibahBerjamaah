@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import { Rider, ConvoyAlert } from '../types';
-import { Locate, Navigation, Users, AlertTriangle, ShieldAlert, Coffee, Fuel } from 'lucide-react';
+import { Locate, Navigation, Users, AlertTriangle, ShieldAlert, Coffee, Fuel, RotateCcw, Compass, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 
 interface IntercomMapProps {
   myCoords: [number, number] | null;
@@ -35,6 +35,102 @@ export const IntercomMap: React.FC<IntercomMapProps> = ({
   const remoteMarkersRef = useRef<Record<string, L.Marker>>({});
   const alertMarkersRef = useRef<Record<string, L.Marker>>({});
   const [mapReady, setMapReady] = useState(false);
+
+  // Odometer (Jarak Tempuh yang bisa di-reset)
+  const [tripDistanceKm, setTripDistanceKm] = useState<number>(() => {
+    const saved = localStorage.getItem('gibah_trip_distance_km');
+    return saved ? parseFloat(saved) || 0 : 0;
+  });
+  const lastCoordsRef = useRef<[number, number] | null>(null);
+
+  // Klinometer (Kemiringan motor saat cornering / tanjakan-turunan)
+  const [leanAngle, setLeanAngle] = useState<number>(0); // Roll / Cornering angle (-50° s/d +50°)
+  const [pitchAngle, setPitchAngle] = useState<number>(0); // Pitch / Incline-Decline (-45° s/d +45°)
+  const [pitchOffset, setPitchOffset] = useState<number>(() => {
+    const saved = localStorage.getItem('gibah_pitch_offset');
+    return saved !== null ? parseFloat(saved) || 0 : 45; // Default 45 deg mount angle di stang motor
+  });
+  const [rollOffset, setRollOffset] = useState<number>(() => {
+    const saved = localStorage.getItem('gibah_roll_offset');
+    return saved !== null ? parseFloat(saved) || 0 : 0;
+  });
+  const rawOrientationRef = useRef<{ gamma: number; beta: number }>({ gamma: 0, beta: 45 });
+
+  // Haversine formula untuk hitung akumulasi jarak perpindahan GPS (km)
+  useEffect(() => {
+    if (!myCoords) return;
+
+    if (!lastCoordsRef.current) {
+      lastCoordsRef.current = myCoords;
+      return;
+    }
+
+    const [lat1, lon1] = lastCoordsRef.current;
+    const [lat2, lon2] = myCoords;
+
+    const R = 6371; // Radius bumi dalam KM
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLon = ((lon2 - lon1) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((lat1 * Math.PI) / 180) *
+        Math.cos((lat2 * Math.PI) / 180) *
+        Math.sin(dLon / 2) *
+        Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const deltaKm = R * c;
+
+    // Filter drift GPS: hanya tambahkan jika gerak nyata minimal 5 meter (0.005 km) dan wajar di bawah 2 km per update
+    if (deltaKm >= 0.005 && deltaKm < 2.0) {
+      setTripDistanceKm((prev) => {
+        const next = Math.round((prev + deltaKm) * 100) / 100;
+        localStorage.setItem('gibah_trip_distance_km', next.toString());
+        return next;
+      });
+      lastCoordsRef.current = myCoords;
+    }
+  }, [myCoords]);
+
+  // Sensor Gyroscope / DeviceOrientation untuk Klinometer
+  useEffect(() => {
+    const handleOrientation = (e: DeviceOrientationEvent) => {
+      if (e.gamma !== null && e.beta !== null) {
+        rawOrientationRef.current = { gamma: e.gamma, beta: e.beta };
+        // Hitung sudut bersih setelah dikurangi offset kalibrasi stang motor
+        const roll = Math.round(e.gamma - rollOffset);
+        const pitch = Math.round(e.beta - pitchOffset);
+        setLeanAngle(Math.max(-55, Math.min(55, roll)));
+        setPitchAngle(Math.max(-50, Math.min(50, pitch)));
+      }
+    };
+
+    if (window.DeviceOrientationEvent) {
+      window.addEventListener('deviceorientation', handleOrientation);
+    }
+    return () => {
+      if (window.DeviceOrientationEvent) {
+        window.removeEventListener('deviceorientation', handleOrientation);
+      }
+    };
+  }, [rollOffset, pitchOffset]);
+
+  // Kalibrasi posisi 0° saat HP terpasang di holder stang motor
+  const handleCalibrateClinometer = () => {
+    const curGamma = Math.round(rawOrientationRef.current.gamma);
+    const curBeta = Math.round(rawOrientationRef.current.beta);
+    setRollOffset(curGamma);
+    setPitchOffset(curBeta);
+    localStorage.setItem('gibah_roll_offset', curGamma.toString());
+    localStorage.setItem('gibah_pitch_offset', curBeta.toString());
+    setLeanAngle(0);
+    setPitchAngle(0);
+  };
+
+  const handleResetTrip = () => {
+    setTripDistanceKm(0);
+    localStorage.setItem('gibah_trip_distance_km', '0');
+    lastCoordsRef.current = myCoords;
+  };
 
   // Helper for battery badge color
   const getBatteryColor = (level: number) => {
@@ -193,7 +289,7 @@ export const IntercomMap: React.FC<IntercomMapProps> = ({
     }
   }, [mapReady, riders]);
 
-  // Update Convoy Alerts pins with 5-minute (300000ms) Auto-Dismiss & Per-Rider deduplication
+  // Update Convoy Alerts pins with 3-minute (180000ms) Auto-Dismiss & Per-Rider deduplication
   useEffect(() => {
     if (!mapReady || !mapInstanceRef.current) return;
     const map = mapInstanceRef.current;
@@ -209,25 +305,32 @@ export const IntercomMap: React.FC<IntercomMapProps> = ({
       }
 
       let pinColor = '#ef4444';
-      let pinSymbol = '!';
+      let pinSymbol = '⚠️';
       if (alert.type === 'FUEL') {
-        pinColor = '#eab308';
+        pinColor = '#2563eb';
         pinSymbol = '⛽';
       } else if (alert.type === 'REST') {
-        pinColor = '#3b82f6';
+        pinColor = '#d97706';
         pinSymbol = '☕';
-      } else if (alert.type === 'STOP') {
-        pinColor = '#b91c1c';
-        pinSymbol = '🛑';
+      } else if (alert.type === 'POLICE') {
+        pinColor = '#ea580c';
+        pinSymbol = '🛡️';
+      } else if (alert.type === 'LOST') {
+        pinColor = '#9333ea';
+        pinSymbol = '👥';
+      } else if (alert.type === 'INFO') {
+        pinColor = '#0891b2';
+        pinSymbol = '🌧️';
       }
 
+      const alertDisplayTitle = alert.title || alert.message || 'Alert';
       const iconHtml = `
         <div class="relative flex flex-col items-center select-none" style="transform: translate(-50%, -50%);">
           <div class="w-8 h-8 rounded-full border-2 border-white text-white flex items-center justify-center shadow-lg animate-bounce" style="background-color: ${pinColor};">
             <span class="text-xs font-black">${pinSymbol}</span>
           </div>
           <div class="mt-1 px-2 py-0.5 bg-zinc-950/95 border text-white text-[10px] font-bold rounded shadow whitespace-nowrap" style="border-color: ${pinColor};">
-            ${alert.message}
+            <span class="text-amber-300 font-mono">${alert.username}</span>: ${alertDisplayTitle}
           </div>
         </div>
       `;
@@ -242,19 +345,19 @@ export const IntercomMap: React.FC<IntercomMapProps> = ({
       const marker = L.marker(alert.coords, { icon: alertIcon, zIndexOffset: 800 }).addTo(map);
       marker.bindPopup(`
         <div class="text-zinc-900 p-1 text-xs">
-          <strong>${alert.username}</strong>: ${alert.message}<br/>
-          <span class="text-zinc-500">${new Date(alert.timestamp).toLocaleTimeString()} (Hapus otomatis dalam 5 mnt)</span>
+          <strong>${alert.username}</strong>: ${alert.title ? alert.title + ' - ' : ''}${alert.message}<br/>
+          <span class="text-zinc-500">${new Date(alert.timestamp).toLocaleTimeString()} (Hapus otomatis dalam 3 mnt)</span>
         </div>
       `);
       alertMarkersRef.current[riderKey] = marker;
 
-      // Auto-dismiss from map after 5 minutes (300,000 ms)
+      // Auto-dismiss from map after 3 minutes (180,000 ms)
       setTimeout(() => {
         if (alertMarkersRef.current[riderKey]) {
           alertMarkersRef.current[riderKey].remove();
           delete alertMarkersRef.current[riderKey];
         }
-      }, 300000);
+      }, 180000);
     }
   }, [mapReady, alerts]);
 
@@ -318,24 +421,228 @@ export const IntercomMap: React.FC<IntercomMapProps> = ({
         )}
       </div>
 
-      {/* Speed & Heading HUD Overlay (Top-Left) */}
-      <div className="absolute top-4 left-4 z-20 pointer-events-none">
-        <div className="bg-zinc-950/85 backdrop-blur-md border border-zinc-800 rounded-xl px-3 py-2 shadow-2xl flex items-center gap-3">
-          <div className="flex flex-col">
-            <span className="text-[10px] tracking-wider text-zinc-400 uppercase font-mono font-bold">Speed</span>
+      {/* HUD Telemetry Panel on Left Side (Speed, Trip, & Expanded Dual-Section Klinometer) */}
+      <div className="absolute top-4 left-4 z-20 pointer-events-auto flex flex-col gap-2 max-w-[275px] select-none">
+        {/* 1. Bar Atas: Speed & Trip Distance (Resettable) */}
+        <div className="bg-zinc-950/90 backdrop-blur-md border border-zinc-800 rounded-2xl p-2.5 shadow-2xl flex items-center justify-between gap-3">
+          {/* Speed */}
+          <div className="flex flex-col min-w-[54px]">
+            <span className="text-[9px] tracking-wider text-zinc-400 uppercase font-mono font-bold">Speed</span>
             <div className="flex items-baseline gap-1">
-              <span className="text-2xl font-black text-emerald-400 font-mono">
+              <span className="text-2xl font-black text-emerald-400 font-mono tracking-tight leading-none">
                 {mySpeed !== null && mySpeed > 1 ? Math.round(mySpeed * 3.6) : 0}
               </span>
               <span className="text-[10px] text-zinc-400 font-bold">km/h</span>
             </div>
           </div>
+
           <div className="h-7 w-px bg-zinc-800" />
-          <div className="flex flex-col">
-            <span className="text-[10px] tracking-wider text-zinc-400 uppercase font-mono font-bold">Heading</span>
-            <span className="text-sm font-bold text-zinc-200 font-mono">
-              {myHeading !== null ? `${Math.round(myHeading)}°` : 'N/A'}
-            </span>
+
+          {/* Trip Distance (Rekaman Jarak Tempuh dengan tombol Reset) */}
+          <div className="flex flex-col min-w-[70px]">
+            <div className="flex items-center justify-between gap-1.5">
+              <span className="text-[9px] tracking-wider text-amber-400 uppercase font-mono font-bold">Trip</span>
+              <button
+                type="button"
+                onClick={handleResetTrip}
+                className="p-1 rounded-md bg-zinc-800 hover:bg-zinc-700 active:scale-90 text-zinc-400 hover:text-amber-300 transition-all"
+                title="Reset Jarak Tempuh ke 0"
+              >
+                <RotateCcw className="w-2.5 h-2.5" />
+              </button>
+            </div>
+            <div className="flex items-baseline gap-1">
+              <span className="text-base font-black text-zinc-100 font-mono tracking-tight leading-none">
+                {tripDistanceKm.toFixed(1)}
+              </span>
+              <span className="text-[10px] text-zinc-400 font-bold">km</span>
+            </div>
+          </div>
+        </div>
+
+        {/* 2. Expanded Dual-Section Klinometer (Kemiringan Kiri/Kanan & Tanjakan/Turunan) */}
+        <div className="bg-zinc-950/92 backdrop-blur-md border border-zinc-800 rounded-2xl p-2.5 shadow-2xl flex flex-col gap-2.5 text-zinc-200">
+          {/* Header Klinometer + Tombol Kalibrasi Tare 0° */}
+          <div className="flex items-center justify-between border-b border-zinc-800/80 pb-1.5">
+            <div className="flex items-center gap-1.5">
+              <Compass className="w-3.5 h-3.5 text-sky-400" />
+              <span className="text-[10px] tracking-wider text-sky-400 uppercase font-mono font-black">
+                Klinometer Motor
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={handleCalibrateClinometer}
+              className="text-[9px] px-2 py-0.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 active:scale-90 text-sky-300 border border-sky-500/30 font-mono font-bold flex items-center gap-1 transition"
+              title="Nol-kan / Kalibrasi posisi HP saat tegak di stang motor"
+            >
+              <RotateCcw className="w-2.5 h-2.5" />
+              <span>Kalibrasi 0°</span>
+            </button>
+          </div>
+
+          {/* BAGIAN 1: KEMIRINGAN TIKUNGAN (KIRI vs KANAN) */}
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center justify-between text-[8px] text-zinc-400 font-mono font-bold">
+              <span>KEMIRINGAN MOTOR</span>
+              <span
+                className={`font-black ${
+                  Math.abs(leanAngle) > 28
+                    ? 'text-red-400'
+                    : Math.abs(leanAngle) > 15
+                    ? 'text-yellow-400'
+                    : leanAngle !== 0
+                    ? 'text-emerald-400'
+                    : 'text-zinc-500'
+                }`}
+              >
+                {leanAngle < -2 ? `REBAH KIRI` : leanAngle > 2 ? `REBAH KANAN` : `TEGAK 0°`}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-1.5">
+              {/* Kolom Kiri */}
+              <div
+                className={`p-2 rounded-xl border flex items-center justify-between transition-all ${
+                  leanAngle < -2
+                    ? Math.abs(leanAngle) > 28
+                      ? 'bg-red-950/50 border-red-500/50 text-red-200'
+                      : Math.abs(leanAngle) > 15
+                      ? 'bg-amber-950/50 border-amber-500/50 text-amber-200'
+                      : 'bg-emerald-950/50 border-emerald-500/50 text-emerald-200'
+                    : 'bg-zinc-900/60 border-zinc-800 text-zinc-500'
+                }`}
+              >
+                <div className="flex flex-col">
+                  <span className="text-[8px] font-mono font-bold uppercase tracking-wider">◀ Kiri</span>
+                  <span className="text-lg font-black font-mono leading-none mt-0.5">
+                    {leanAngle < 0 ? `${Math.abs(leanAngle)}°` : '0°'}
+                  </span>
+                </div>
+                {/* Visual Banking Arc */}
+                <div className="relative w-6 h-6 rounded-full bg-zinc-950 border border-zinc-700/80 flex items-center justify-center overflow-hidden shrink-0">
+                  <div className="absolute w-full h-[1px] bg-zinc-700" />
+                  <div
+                    className="absolute w-5 h-[2px] rounded-full transition-transform duration-100 ease-out"
+                    style={{
+                      transform: `rotate(${leanAngle < 0 ? leanAngle : 0}deg)`,
+                      backgroundColor: leanAngle < -2 ? '#34d399' : '#71717a',
+                    }}
+                  />
+                  <div className="w-1 h-1 rounded-full bg-zinc-300 z-10" />
+                </div>
+              </div>
+
+              {/* Kolom Kanan */}
+              <div
+                className={`p-2 rounded-xl border flex items-center justify-between transition-all ${
+                  leanAngle > 2
+                    ? leanAngle > 28
+                      ? 'bg-red-950/50 border-red-500/50 text-red-200'
+                      : leanAngle > 15
+                      ? 'bg-amber-950/50 border-amber-500/50 text-amber-200'
+                      : 'bg-emerald-950/50 border-emerald-500/50 text-emerald-200'
+                    : 'bg-zinc-900/60 border-zinc-800 text-zinc-500'
+                }`}
+              >
+                {/* Visual Banking Arc */}
+                <div className="relative w-6 h-6 rounded-full bg-zinc-950 border border-zinc-700/80 flex items-center justify-center overflow-hidden shrink-0">
+                  <div className="absolute w-full h-[1px] bg-zinc-700" />
+                  <div
+                    className="absolute w-5 h-[2px] rounded-full transition-transform duration-100 ease-out"
+                    style={{
+                      transform: `rotate(${leanAngle > 0 ? leanAngle : 0}deg)`,
+                      backgroundColor: leanAngle > 2 ? '#34d399' : '#71717a',
+                    }}
+                  />
+                  <div className="w-1 h-1 rounded-full bg-zinc-300 z-10" />
+                </div>
+                <div className="flex flex-col items-end">
+                  <span className="text-[8px] font-mono font-bold uppercase tracking-wider">Kanan ▶</span>
+                  <span className="text-lg font-black font-mono leading-none mt-0.5">
+                    {leanAngle > 0 ? `${leanAngle}°` : '0°'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="h-px bg-zinc-800/80" />
+
+          {/* BAGIAN 2: KONTUR JALAN (TANJAKAN ▲ NAIK & TURUNAN ▼ TURUN) */}
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center justify-between text-[8px] text-zinc-400 font-mono font-bold">
+              <span>KONTUR JALAN</span>
+              <span
+                className={`font-black ${
+                  pitchAngle > 8
+                    ? 'text-amber-400'
+                    : pitchAngle > 2
+                    ? 'text-amber-300'
+                    : pitchAngle < -8
+                    ? 'text-sky-400'
+                    : pitchAngle < -2
+                    ? 'text-sky-300'
+                    : 'text-zinc-500'
+                }`}
+              >
+                {pitchAngle > 8
+                  ? '▲ TANJAKAN CURAM'
+                  : pitchAngle > 2
+                  ? '▲ MENANJAK'
+                  : pitchAngle < -8
+                  ? '▼ TURUNAN CURAM'
+                  : pitchAngle < -2
+                  ? '▼ MENURUN'
+                  : 'DATAR 0°'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-1.5">
+              {/* Kolom Tanjakan Naik */}
+              <div
+                className={`p-2 rounded-xl border flex items-center justify-between transition-all ${
+                  pitchAngle > 2
+                    ? 'bg-amber-950/50 border-amber-500/60 text-amber-200'
+                    : 'bg-zinc-900/60 border-zinc-800 text-zinc-500'
+                }`}
+              >
+                <div className="flex flex-col">
+                  <div className="flex items-center gap-1 text-[8px] font-mono font-bold uppercase">
+                    <span className="text-amber-400 font-black">▲</span>
+                    <span>Naik</span>
+                  </div>
+                  <span className="text-lg font-black font-mono leading-none mt-0.5">
+                    {pitchAngle > 0 ? `+${pitchAngle}°` : '0°'}
+                  </span>
+                </div>
+                <div className={`p-1 rounded-md ${pitchAngle > 2 ? 'bg-amber-500/20 text-amber-300' : 'bg-zinc-800 text-zinc-600'}`}>
+                  <ArrowUpRight className="w-3.5 h-3.5" />
+                </div>
+              </div>
+
+              {/* Kolom Turunan Turun */}
+              <div
+                className={`p-2 rounded-xl border flex items-center justify-between transition-all ${
+                  pitchAngle < -2
+                    ? 'bg-sky-950/50 border-sky-500/60 text-sky-200'
+                    : 'bg-zinc-900/60 border-zinc-800 text-zinc-500'
+                }`}
+              >
+                <div className={`p-1 rounded-md ${pitchAngle < -2 ? 'bg-sky-500/20 text-sky-300' : 'bg-zinc-800 text-zinc-600'}`}>
+                  <ArrowDownRight className="w-3.5 h-3.5" />
+                </div>
+                <div className="flex flex-col items-end">
+                  <div className="flex items-center gap-1 text-[8px] font-mono font-bold uppercase">
+                    <span>Turun</span>
+                    <span className="text-sky-400 font-black">▼</span>
+                  </div>
+                  <span className="text-lg font-black font-mono leading-none mt-0.5">
+                    {pitchAngle < 0 ? `${pitchAngle}°` : '0°'}
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

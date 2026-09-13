@@ -53,12 +53,59 @@ let cachedSilentWavUrl: string | null = null;
 
 export function startBackgroundAudioKeepAlive(): () => void {
   try {
+    // 1. Inisialisasi dan putar elemen audio senyap kontinu
+    if (!silentAudioElement) {
+      if (!cachedSilentWavUrl) {
+        const blob = createSilentWavBlob();
+        cachedSilentWavUrl = URL.createObjectURL(blob);
+      }
+      const el = document.createElement('audio');
+      el.id = 'gibah-background-keepalive';
+      el.loop = true;
+      el.autoplay = true;
+      el.muted = false;
+      el.volume = 0.001; // Volume mikro non-nol menjaga audio daemon mobile tetap aktif
+      el.setAttribute('playsinline', 'true');
+      el.setAttribute('webkit-playsinline', 'true');
+      el.src = cachedSilentWavUrl;
+      el.style.position = 'fixed';
+      el.style.bottom = '0px';
+      el.style.right = '0px';
+      el.style.width = '1px';
+      el.style.height = '1px';
+      el.style.opacity = '0.01';
+      el.style.pointerEvents = 'none';
+
+      el.onpause = () => {
+        // Otomatis putar ulang jika sistem mencoba mem-pause di background
+        setTimeout(() => {
+          if (el && el.paused && cachedSilentWavUrl) {
+            el.play().catch(() => {});
+          }
+        }, 200);
+      };
+
+      document.body.appendChild(el);
+      silentAudioElement = el;
+    }
+
+    if (silentAudioElement.paused) {
+      silentAudioElement.play().catch((e) => {
+        console.warn('[KeepAlive] Audio keepalive play warning:', e);
+      });
+    }
+
+    // 2. Daftarkan Media Session API agar Android/iOS mengenali aplikasi sebagai Foreground Audio Service
     if ('mediaSession' in navigator) {
       try {
         navigator.mediaSession.metadata = new MediaMetadata({
           title: 'Gibah On The Road',
-          artist: 'Intercom Aktif (P2P Mesh)',
+          artist: 'Intercom & Musik Aktif (Latar Belakang)',
           album: 'Touring Mode',
+          artwork: [
+            { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+            { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+          ],
         });
         navigator.mediaSession.playbackState = 'playing';
       } catch (e) {
@@ -66,7 +113,7 @@ export function startBackgroundAudioKeepAlive(): () => void {
       }
     }
   } catch (e) {
-    console.warn('[KeepAlive] Failed to init media session:', e);
+    console.warn('[KeepAlive] Failed to init background keep-alive:', e);
   }
 
   return () => {
@@ -98,7 +145,7 @@ export function stopBackgroundAudioKeepAlive() {
 }
 
 // Intercom Beep alert generator for convoy warnings & alerts (PTT chirp, danger chime)
-export function playIntercomChirp(type: 'ptt-on' | 'ptt-off' | 'alert' | 'join') {
+export function playIntercomChirp(type: 'ptt-on' | 'ptt-off' | 'alert' | 'join' | 'leave') {
   try {
     const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!AudioContextClass) return;
@@ -147,6 +194,15 @@ export function playIntercomChirp(type: 'ptt-on' | 'ptt-off' | 'alert' | 'join')
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
       osc.start(now);
       osc.stop(now + 0.3);
+    } else if (type === 'leave') {
+      // Descending chime for rider leaving room
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(659.25, now); // E5
+      osc.frequency.setValueAtTime(523.25, now + 0.1); // C5
+      gain.gain.setValueAtTime(0.12, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+      osc.start(now);
+      osc.stop(now + 0.25);
     }
 
     setTimeout(() => {

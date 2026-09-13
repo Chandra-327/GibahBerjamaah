@@ -23,14 +23,16 @@ export interface ConvoyAlert {
   userId: string;
   username: string;
   type: 'DANGER' | 'REST' | 'POLICE' | 'FUEL' | 'LOST' | 'INFO';
+  title?: string;
   message: string;
   coords?: [number, number] | null;
   timestamp: number;
 }
 
 export interface DJMusicState {
-  userId: string;
-  djName: string;
+  activeDjId: string | null;
+  activeDjName: string | null;
+  isDjActive: boolean;
   isPlaying: boolean;
   trackTitle: string;
 }

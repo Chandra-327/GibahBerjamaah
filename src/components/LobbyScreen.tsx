@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { Radio, Mic, MapPin, Battery, ShieldCheck, ArrowRight, Zap, Info } from 'lucide-react';
 import { IntercomMode } from '../types';
-import { PWAInstallButton } from './PWAInstallButton';
 
 interface LobbyScreenProps {
   onJoin: (callsign: string, roomId: string, mode: IntercomMode) => void;
@@ -39,7 +38,6 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({ onJoin, batteryLevel }
             <Battery className="w-3.5 h-3.5 text-emerald-400" />
             <span>{batteryLevel}%</span>
           </div>
-          <PWAInstallButton />
         </div>
       </div>
 
@@ -77,7 +75,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({ onJoin, batteryLevel }
               maxLength={15}
               value={callsign}
               onChange={(e) => setCallsign(e.target.value)}
-              placeholder="Contoh: Bule, Road Captain, Sweeper..."
+              placeholder="Contoh: Chanz Kasep, Road Captain, Sweeper..."
               className="w-full px-4 py-3.5 rounded-2xl bg-zinc-900 border-2 border-zinc-700 text-white font-bold text-base placeholder-zinc-500 focus:outline-none focus:border-emerald-400 transition"
               autoFocus
             />

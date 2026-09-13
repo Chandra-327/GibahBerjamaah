@@ -5,7 +5,7 @@ import { useBattery } from './hooks/useBattery';
 import { useWakeLock } from './hooks/useWakeLock';
 import { useMediaSession } from './hooks/useMediaSession';
 import { useIntercomAudio } from './hooks/useIntercomAudio';
-import { startBackgroundAudioKeepAlive, stopBackgroundAudioKeepAlive, playIntercomChirp } from './utils/audioKeepAlive';
+import { startBackgroundAudioKeepAlive, playIntercomChirp } from './utils/audioKeepAlive';
 import { IntercomMap } from './components/IntercomMap';
 import { RiderControls } from './components/RiderControls';
 import { LobbyScreen } from './components/LobbyScreen';
@@ -14,8 +14,9 @@ import { RiderListModal } from './components/RiderListModal';
 import { BatteryGuideModal } from './components/BatteryGuideModal';
 import { ConvoyAlertToast } from './components/ConvoyAlertToast';
 import { DJMusicModal } from './components/DJMusicModal';
-import { PWAInstallButton } from './components/PWAInstallButton';
-import { Radio, Wifi, WifiOff, Users, Battery, LogOut, Info, Music, Disc3 } from 'lucide-react';
+import { VolumeBoosterModal } from './components/VolumeBoosterModal';
+import { AudioDeviceModal } from './components/AudioDeviceModal';
+import { Radio, Wifi, WifiOff, Users, Battery, LogOut, Info, Music, Zap, Headphones, Bluetooth } from 'lucide-react';
 
 export default function App() {
   const [isJoined, setIsJoined] = useState(false);
@@ -35,12 +36,12 @@ export default function App() {
   const [activeAlert, setActiveAlert] = useState<ConvoyAlert | null>(null);
   const [alertHistory, setAlertHistory] = useState<ConvoyAlert[]>([]);
 
-  // Jaminan otomatis hilangkan bilah alert (Bensin/SPBU/Bahaya) setelah 7 detik
+  // Otomatis hilangkan bilah alert (Bensin/SPBU/Bahaya/Razia) setelah 40 detik
   useEffect(() => {
     if (!activeAlert) return;
     const timer = setTimeout(() => {
       setActiveAlert(null);
-    }, 7500);
+    }, 40500);
     return () => clearTimeout(timer);
   }, [activeAlert]);
 
@@ -49,6 +50,8 @@ export default function App() {
   const [isRiderListOpen, setIsRiderListOpen] = useState(false);
   const [isBatteryGuideOpen, setIsBatteryGuideOpen] = useState(false);
   const [isDJModalOpen, setIsDJModalOpen] = useState(false);
+  const [isVolumeBoosterOpen, setIsVolumeBoosterOpen] = useState(false);
+  const [isAudioDeviceModalOpen, setIsAudioDeviceModalOpen] = useState(false);
   const [activeDjState, setActiveDjState] = useState<DJMusicState | null>(null);
 
   // Networking state
@@ -66,7 +69,6 @@ export default function App() {
     isTransmitting,
     isMySpeaking,
     initMicrophone,
-    restartAudioStream,
     startPtt,
     endPtt,
     isDjMode,
@@ -77,6 +79,8 @@ export default function App() {
     setMusicVolume,
     receiverVolume,
     setReceiverVolume,
+    micBoost,
+    setMicBoost,
     isDucked,
     playlist,
     currentTrackIndex,
@@ -89,10 +93,24 @@ export default function App() {
     playPrevTrack,
     togglePlayMusic,
     stopMusic,
-    audioOutputMode,
-    toggleAudioOutput,
     deviceToastMessage,
     dismissDeviceToast,
+    toggleDjMode,
+    isDjOwner,
+    isDjLockedByOther,
+    resetDjLock,
+    inputDevices,
+    outputDevices,
+    selectedInputId,
+    selectedOutputId,
+    activeDeviceLabel,
+    selectInputDevice,
+    selectOutputDevice,
+    forceFixAudio,
+    isFixingAudio,
+    connectedPeersCount,
+    syncAllPeers,
+    resumeAudioContext,
   } = useIntercomAudio({
     socket: socketInstance,
     roomId,
@@ -100,6 +118,8 @@ export default function App() {
     mode,
     isMuted,
     anyRiderSpeaking: riders.some((r) => r.isSpeaking),
+    activeDjState,
+    setActiveDjState,
   });
 
   // Handle Mute Toggle
@@ -122,16 +142,21 @@ export default function App() {
     setRoomId(room);
     setMode(selectedMode);
 
-    // 1. Start silent audio keep-alive to keep mobile OS from suspending in pocket
+    // 1. Resume AudioContext instantly during user click gesture to unlock mobile autoplay
+    try {
+      await resumeAudioContext();
+    } catch {}
+
+    // 2. Start silent audio keep-alive to keep mobile OS from suspending in pocket
     startBackgroundAudioKeepAlive();
 
-    // 2. Request initial wake lock
+    // 3. Request initial wake lock
     await requestLock();
 
-    // 3. Request microphone FIRST so audio track is ready before signaling begins
+    // 4. Request microphone FIRST so audio track is ready before signaling begins
     await initMicrophone();
 
-    // 4. Connect Socket.io
+    // 5. Connect Socket.io
     const socket = io({
       transports: ['websocket', 'polling'],
       reconnection: true,
@@ -169,6 +194,50 @@ export default function App() {
       setRiders(data.users || []);
     });
 
+    // Rider baru bergabung
+    socket.on('user-connected', (data: { userId: string; username: string; battery?: number; coords?: [number, number] }) => {
+      setRiders((prev) => {
+        if (prev.some((r) => r.userId === data.userId)) return prev;
+        return [
+          ...prev,
+          {
+            userId: data.userId,
+            username: data.username,
+            battery: data.battery ?? 100,
+            coords: data.coords ?? null,
+            heading: null,
+            speed: null,
+            isMuted: false,
+            isSpeaking: false,
+            lastSeen: Date.now(),
+          },
+        ];
+      });
+    });
+
+    // Rider disconnect / keluar room
+    socket.on('user-disconnected', (data: { userId: string } | string) => {
+      const disconnectedId = typeof data === 'string' ? data : data?.userId;
+      if (!disconnectedId) return;
+      console.log('[Socket] User disconnected from room:', disconnectedId);
+      setRiders((prev) => prev.filter((r) => r.userId !== disconnectedId));
+
+      // Jika rider yang keluar adalah DJ yang sedang aktif, langsung reset status DJ di App.tsx
+      setActiveDjState((current) => {
+        if (current && current.activeDjId === disconnectedId) {
+          console.log('[DJ] Active DJ disconnected, clearing App.tsx activeDjState');
+          return {
+            activeDjId: null,
+            activeDjName: null,
+            isDjActive: false,
+            isPlaying: false,
+            trackTitle: '',
+          };
+        }
+        return current;
+      });
+    });
+
     // Remote metadata updates (GPS, battery, etc.)
     socket.on('metadata-updated', (data: {
       userId: string;
@@ -196,12 +265,12 @@ export default function App() {
             {
               userId: data.userId,
               username: data.username,
-              battery: data.battery ?? 100,
-              coords: data.coords ?? null,
-              heading: data.heading ?? null,
-              speed: data.speed ?? null,
-              isMuted: data.isMuted ?? false,
-              isSpeaking: data.isSpeaking ?? false,
+              coords: data.coords,
+              battery: data.battery,
+              heading: data.heading,
+              speed: data.speed,
+              isMuted: data.isMuted,
+              isSpeaking: data.isSpeaking,
               lastSeen: Date.now(),
             },
           ];
@@ -209,167 +278,157 @@ export default function App() {
       });
     });
 
-    // Remote Voice State Changed (VAD instant indicator)
-    socket.on('voice-state-changed', (data: { userId: string; isSpeaking: boolean; isMuted?: boolean }) => {
-      setRiders((prev) =>
-        prev.map((r) => {
-          if (r.userId === data.userId) {
-            return {
-              ...r,
-              isSpeaking: data.isSpeaking,
-              isMuted: data.isMuted !== undefined ? data.isMuted : r.isMuted,
-            };
-          }
-          return r;
-        })
-      );
-    });
-
-    // Convoy Alerts
+    // Convoy Alert Broadcast Listener
     socket.on('convoy-alert', (alert: ConvoyAlert) => {
-      console.log('[Alert Received]:', alert);
-      playIntercomChirp('alert');
+      console.log('[Alert] Incoming convoy alert:', alert);
       setActiveAlert(alert);
-      setAlertHistory((prev) => {
-        // Clear previous alert from the same user to avoid duplicate label pileup
-        const filtered = prev.filter((a) => a.username !== alert.username && a.id !== alert.id);
-        return [alert, ...filtered].slice(0, 20);
-      });
+      setAlertHistory((prev) => [alert, ...prev.slice(0, 49)]);
+      playIntercomChirp('alert');
     });
 
-    // Remote DJ Kapten Music State (When another rider is playing music)
-    socket.on('dj-music-state', (data: DJMusicState) => {
-      console.log('[DJ Music State]:', data);
-      setActiveDjState(data.isPlaying ? data : null);
+    // DJ Music State Broadcast Listener (from Kapten)
+    socket.on('dj-music-state', (djState: DJMusicState) => {
+      console.log('[DJ] Remote DJ State received:', djState);
+      setActiveDjState(djState);
     });
-
-    // User Disconnected
-    socket.on('user-disconnected', (userId: string) => {
-      setRiders((prev) => prev.filter((r) => r.userId !== userId));
-      setActiveDjState((prev) => (prev?.userId === userId ? null : prev));
-    });
-
-    // 5. Start GPS tracking
-    startGeolocationTracking(socket);
 
     setIsJoined(true);
   };
 
-  // GPS Geolocation Watcher
-  const startGeolocationTracking = (socket: Socket) => {
-    if (!('geolocation' in navigator)) return;
+  // GPS Geolocation Tracking
+  useEffect(() => {
+    if (!isJoined) return;
 
-    let lastEmitTime = 0;
+    if (!navigator.geolocation) {
+      console.warn('Geolocation is not supported by this browser.');
+      return;
+    }
 
-    navigator.geolocation.watchPosition(
-      (pos) => {
-        const coords: [number, number] = [pos.coords.latitude, pos.coords.longitude];
-        setMyCoords(coords);
-        setMyHeading(pos.coords.heading);
-        setMySpeed(pos.coords.speed);
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const { latitude, longitude, heading, speed } = position.coords;
+        const newCoords: [number, number] = [latitude, longitude];
 
-        // Throttle emission to max once per 1000ms
-        const now = Date.now();
-        if (now - lastEmitTime > 1000) {
-          lastEmitTime = now;
-          socket.emit('update-metadata', {
-            coords,
-            battery: batteryLevel,
-            heading: pos.coords.heading,
-            speed: pos.coords.speed,
-            isMuted,
-            isSpeaking: isMySpeaking,
+        setMyCoords(newCoords);
+        setMyHeading(heading);
+        setMySpeed(speed !== null ? Math.round(speed * 3.6) : null); // m/s to km/h
+
+        if (socketRef.current?.connected) {
+          socketRef.current.emit('metadata-update', {
+            coords: newCoords,
+            heading: heading || null,
+            speed: speed !== null ? Math.round(speed * 3.6) : null,
           });
         }
       },
-      (err) => {
-        console.warn('Geolocation watch error:', err.message);
+      (error) => {
+        console.warn('Geolocation watch error:', error.message);
       },
       {
         enableHighAccuracy: true,
-        maximumAge: 1000,
+        maximumAge: 2000,
         timeout: 10000,
       }
     );
-  };
 
-  // Broadcast Convoy Alert
-  const handleSendAlert = (type: 'DANGER' | 'REST' | 'POLICE' | 'FUEL' | 'LOST' | 'INFO', message: string) => {
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, [isJoined]);
+
+  // Sync Battery Level across the convoy
+  useEffect(() => {
+    if (isJoined && socketRef.current?.connected) {
+      socketRef.current.emit('metadata-update', {
+        battery: batteryLevel,
+      });
+    }
+  }, [batteryLevel, isJoined]);
+
+  // Sync Mute State across the convoy
+  useEffect(() => {
+    if (isJoined && socketRef.current?.connected) {
+      socketRef.current.emit('metadata-update', {
+        isMuted,
+      });
+    }
+  }, [isMuted, isJoined]);
+
+  // Send Alert Handler
+  const handleSendAlert = (
+    type: 'DANGER' | 'REST' | 'POLICE' | 'FUEL' | 'LOST' | 'INFO',
+    title: string,
+    message: string
+  ) => {
     if (!socketRef.current) return;
-    socketRef.current.emit('convoy-alert', {
+    const alertData = {
       type,
+      title,
       message,
       coords: myCoords,
-    });
-    playIntercomChirp('alert');
+    };
+    socketRef.current.emit('convoy-alert', alertData);
   };
 
-  // Keyboard Spacebar PTT shortcut for testing/cockpit controls
-  useEffect(() => {
-    if (!isJoined || mode !== 'PTT') return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && !e.repeat && (e.target as HTMLElement).tagName !== 'INPUT') {
-        e.preventDefault();
-        startPtt();
-      }
-    };
-
-    const handleKeyUp = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && (e.target as HTMLElement).tagName !== 'INPUT') {
-        e.preventDefault();
-        endPtt();
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
-    };
-  }, [isJoined, mode, startPtt, endPtt]);
-
-  // Leave room / Logout
+  // Leave room handler
   const handleLeave = () => {
-    if (confirm('Keluar dari room interkom touring?')) {
-      stopBackgroundAudioKeepAlive();
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-        socketRef.current = null;
-      }
-      setIsJoined(false);
-      setRiders([]);
-      setMyCoords(null);
+    if (socketRef.current) {
+      socketRef.current.disconnect();
+      socketRef.current = null;
+      setSocketInstance(null);
     }
+    setIsJoined(false);
+    setRiders([]);
+    setActiveAlert(null);
   };
 
-  // Render Lobby Screen if not joined
+  // Render Lobby screen if not joined
   if (!isJoined) {
-    return <LobbyScreen onJoin={handleJoin} batteryLevel={batteryLevel} />;
+    return (
+      <div className="h-screen w-screen bg-black text-white flex flex-col justify-between overflow-hidden">
+        <LobbyScreen
+          defaultCallsign={callsign}
+          defaultRoom={roomId}
+          defaultMode={mode}
+          onJoin={handleJoin}
+          batteryLevel={batteryLevel}
+        />
+      </div>
+    );
   }
 
-  // Active Touring Screen
+  const isBluetoothActive =
+    activeDeviceLabel.toLowerCase().includes('bluetooth') ||
+    activeDeviceLabel.toLowerCase().includes('headset') ||
+    activeDeviceLabel.toLowerCase().includes('wireless') ||
+    activeDeviceLabel.toLowerCase().includes('sena') ||
+    activeDeviceLabel.toLowerCase().includes('cardo') ||
+    activeDeviceLabel.toLowerCase().includes('ejeas') ||
+    activeDeviceLabel.toLowerCase().includes('freedconn');
+
   return (
-    <div className="fixed inset-0 bg-zinc-950 text-white flex flex-col select-none overflow-hidden font-sans">
-      {/* Top Tactical Status Bar */}
-      <header className="h-14 bg-zinc-950/90 backdrop-blur-md border-b border-zinc-800/80 px-3 flex items-center justify-between z-30 pt-safe">
-        {/* Left: Branding & Room */}
+    <div className="h-screen w-screen bg-black text-white flex flex-col overflow-hidden select-none">
+      {/* Top HUD Status Bar */}
+      <header className="h-14 bg-zinc-950/90 backdrop-blur border-b border-zinc-800/80 px-3 flex items-center justify-between z-30 shrink-0">
+        {/* Left: Branding & Intercom Status */}
         <div className="flex items-center gap-2">
-          <div className="p-1.5 rounded-xl bg-zinc-900 border border-emerald-500/60 flex items-center justify-center">
-            <Radio className="w-4 h-4 text-emerald-400" />
+          <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center">
+            <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
           </div>
           <div>
             <div className="flex items-center gap-1.5">
-              <span className="font-black text-sm text-white tracking-wider">GIBAH BERJAMAAH</span>
-              <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-zinc-800 text-emerald-400 font-bold border border-zinc-700">
-                {roomId}
+              <span className="font-black text-sm tracking-tight">{roomId}</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 font-mono font-bold">
+                {callsign}
               </span>
             </div>
-            <div className="text-[10px] text-zinc-400 flex items-center gap-1 font-mono">
-              <span className="text-zinc-200 font-bold">{callsign}</span>
-              <span>•</span>
-              <span className={isConnected ? 'text-emerald-400' : 'text-amber-400'}>
+            <div className="flex items-center gap-2 text-[10px] text-zinc-400 font-medium">
+              <span className="flex items-center gap-1">
+                {isConnected ? (
+                  <Wifi className="w-3 h-3 text-emerald-400" />
+                ) : (
+                  <WifiOff className="w-3 h-3 text-red-400 animate-pulse" />
+                )}
                 {isConnected ? 'WSS Online' : 'Reconnecting...'}
               </span>
               {(isMusicPlaying || activeDjState?.isPlaying) && (
@@ -386,7 +445,61 @@ export default function App() {
         </div>
 
         {/* Right: Telemetry & Actions */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2">
+          {/* P2P WebRTC Connection Status & One-Tap Re-Sync */}
+          {riders.length > 0 && (
+            <button
+              onClick={syncAllPeers}
+              className={`flex items-center gap-1 px-2 py-1 rounded-lg border text-xs font-bold transition active:scale-95 ${
+                connectedPeersCount > 0
+                  ? 'bg-emerald-950/80 border-emerald-500/50 text-emerald-300 shadow-sm shadow-emerald-500/20'
+                  : 'bg-amber-950/80 border-amber-500/70 text-amber-300 animate-pulse'
+              }`}
+              title={
+                connectedPeersCount > 0
+                  ? `P2P Audio Terhubung (${connectedPeersCount} Rider). Klik untuk Re-sync.`
+                  : 'Menghubungkan Audio P2P WebRTC. Klik untuk Paksa Sambung.'
+              }
+            >
+              <Radio className={`w-3.5 h-3.5 ${connectedPeersCount > 0 ? 'text-emerald-400' : 'text-amber-400'}`} />
+              <span className="text-[11px] font-mono">
+                {connectedPeersCount > 0 ? `${connectedPeersCount} P2P` : 'Sync P2P'}
+              </span>
+            </button>
+          )}
+
+          {/* Audio Device Switcher & Fix Button */}
+          <button
+            onClick={() => setIsAudioDeviceModalOpen(true)}
+            className={`flex items-center gap-1 px-2 py-1 rounded-lg border text-xs font-bold transition active:scale-95 ${
+              isBluetoothActive
+                ? 'bg-purple-950/80 border-purple-500 text-purple-300 shadow-sm shadow-purple-500/30'
+                : 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:text-white'
+            }`}
+            title="Pengaturan Audio & Bluetooth Helm"
+          >
+            {isBluetoothActive ? (
+              <Bluetooth className="w-3.5 h-3.5 text-purple-400 animate-pulse" />
+            ) : (
+              <Headphones className="w-3.5 h-3.5 text-zinc-400" />
+            )}
+            <span className="hidden sm:inline text-[11px]">{isBluetoothActive ? 'BT Helm' : 'Audio HP'}</span>
+          </button>
+
+          {/* Quick Audio Volume Booster Button */}
+          <button
+            onClick={() => setIsVolumeBoosterOpen(true)}
+            className={`flex items-center gap-1 px-2 py-1 rounded-lg border text-xs font-mono font-bold transition active:scale-95 ${
+              receiverVolume > 1.0
+                ? 'bg-emerald-950/80 border-emerald-500 text-emerald-300 shadow-sm shadow-emerald-500/30'
+                : 'bg-zinc-900 border-zinc-800 text-zinc-300'
+            }`}
+            title="Penguat Volume & Mic Rider"
+          >
+            <Zap className={`w-3.5 h-3.5 ${receiverVolume > 1.0 ? 'text-emerald-400' : 'text-zinc-400'}`} />
+            <span>{Math.round(receiverVolume * 100)}%</span>
+          </button>
+
           {/* Battery Status */}
           <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-zinc-900 border border-zinc-800 text-xs font-mono">
             <Battery className="w-3.5 h-3.5 text-emerald-400" />
@@ -454,15 +567,16 @@ export default function App() {
         isWakeLocked={isWakeLocked}
         onToggleWakeLock={toggleWakeLock}
         onToggleMute={toggleMute}
-        onResetAudio={restartAudioStream}
-        audioOutputMode={audioOutputMode}
-        onToggleAudioOutput={toggleAudioOutput}
         onPttStart={startPtt}
         onPttEnd={endPtt}
         onOpenAlerts={() => setIsAlertModalOpen(true)}
         onOpenRiderList={() => setIsRiderListOpen(true)}
         onOpenBatteryGuide={() => setIsBatteryGuideOpen(true)}
         onOpenDJModal={() => setIsDJModalOpen(true)}
+        onOpenBooster={() => setIsVolumeBoosterOpen(true)}
+        onOpenAudioDevices={() => setIsAudioDeviceModalOpen(true)}
+        activeDeviceLabel={activeDeviceLabel}
+        receiverVolume={receiverVolume}
         isDjActive={isDjMode}
         isPlayingMusic={isMusicPlaying}
         connectedCount={riders.length + 1}
@@ -487,18 +601,40 @@ export default function App() {
         </div>
       )}
 
+      {/* Audio Device & Bluetooth Helm Modal */}
+      <AudioDeviceModal
+        isOpen={isAudioDeviceModalOpen}
+        onClose={() => setIsAudioDeviceModalOpen(false)}
+        activeDeviceLabel={activeDeviceLabel}
+        inputDevices={inputDevices}
+        outputDevices={outputDevices}
+        selectedInputId={selectedInputId}
+        selectedOutputId={selectedOutputId}
+        onSelectInputDevice={selectInputDevice}
+        onSelectOutputDevice={selectOutputDevice}
+        onForceFixAudio={forceFixAudio}
+        isFixingAudio={isFixingAudio}
+        audioStatus={audioStatus}
+      />
+
       {/* DJ Kapten Music Sharing Modal */}
       <DJMusicModal
         isOpen={isDJModalOpen}
         onClose={() => setIsDJModalOpen(false)}
         isDjMode={isDjMode}
-        onToggleDjMode={setIsDjMode}
+        onToggleDjMode={toggleDjMode}
+        onResetDjLock={resetDjLock}
+        isDjLockedByOther={isDjLockedByOther}
+        activeDjName={activeDjState?.activeDjName}
+        isDjOwner={isDjOwner}
         trackTitle={musicTrackTitle}
         isPlaying={isMusicPlaying}
         volume={musicVolume}
         onVolumeChange={setMusicVolume}
         receiverVolume={receiverVolume}
         onReceiverVolumeChange={setReceiverVolume}
+        micBoost={micBoost}
+        onMicBoostChange={setMicBoost}
         isDucked={isDucked}
         playlist={playlist}
         currentTrackIndex={currentTrackIndex}
@@ -511,6 +647,16 @@ export default function App() {
         onPrevTrack={playPrevTrack}
         onTogglePlay={togglePlayMusic}
         onStop={stopMusic}
+      />
+
+      {/* Volume Booster Modal (Penguat Suara Rider & Mic Preamp) */}
+      <VolumeBoosterModal
+        isOpen={isVolumeBoosterOpen}
+        onClose={() => setIsVolumeBoosterOpen(false)}
+        receiverVolume={receiverVolume}
+        onReceiverVolumeChange={setReceiverVolume}
+        micBoost={micBoost}
+        onMicBoostChange={setMicBoost}
       />
 
       {/* Modals */}

@@ -35,6 +35,18 @@ app.use(express.json());
 // In-memory store for active riders (ideal for lightweight STB Armbian)
 const riders: Record<string, RiderState> = {};
 
+// In-memory store for single active DJ per room (First-Come First-Served lock)
+interface RoomDJState {
+  activeDjId: string | null;
+  activeDjName: string | null;
+  isDjActive: boolean;
+  isPlaying: boolean;
+  trackTitle: string;
+}
+const roomDJs: Record<string, RoomDJState> = {};
+// Grace period timers for DJ reconnections during poor mobile signal / cell tower hops
+const djDisconnectTimers: Record<string, NodeJS.Timeout> = {};
+
 // REST endpoints for monitoring & status
 app.get("/api/health", (_req, res) => {
   const activeRooms = new Set(Object.values(riders).map((r) => r.roomId));
@@ -115,6 +127,33 @@ io.on("connection", (socket) => {
       users: existingInRoom,
     });
 
+    // Check if the joining user was the active DJ in this room within the grace period
+    const existingDj = roomDJs[roomId];
+    if (
+      existingDj &&
+      existingDj.isDjActive &&
+      existingDj.activeDjName &&
+      existingDj.activeDjName.trim().toLowerCase() === username.trim().toLowerCase()
+    ) {
+      if (djDisconnectTimers[roomId]) {
+        console.log(`[DJ RECOVERED] DJ ${username} reconnected within grace period! Restoring DJ seat for room ${roomId}`);
+        clearTimeout(djDisconnectTimers[roomId]);
+        delete djDisconnectTimers[roomId];
+      }
+      existingDj.activeDjId = socket.id;
+      io.to(roomId).emit("dj-music-state", existingDj);
+    }
+
+    // Send current room DJ state to the newly joined rider
+    const currentDj = roomDJs[roomId] || {
+      activeDjId: null,
+      activeDjName: null,
+      isDjActive: false,
+      isPlaying: false,
+      trackTitle: '',
+    };
+    socket.emit("dj-music-state", currentDj);
+
     // Notify others in room about new rider
     socket.to(roomId).emit("user-connected", {
       userId: socket.id,
@@ -134,7 +173,7 @@ io.on("connection", (socket) => {
   });
 
   // 3. Metadata Broadcast (GPS Coordinates, Heading, Speed, Battery)
-  socket.on("update-metadata", (data: {
+  const handleMetadataUpdate = (data: {
     coords?: [number, number];
     battery?: number;
     heading?: number | null;
@@ -163,7 +202,10 @@ io.on("connection", (socket) => {
       isMuted: rider.isMuted,
       isSpeaking: rider.isSpeaking,
     });
-  });
+  };
+
+  socket.on("update-metadata", handleMetadataUpdate);
+  socket.on("metadata-update", handleMetadataUpdate);
 
   // 4. Instant Voice Activity (VAD) state change
   socket.on("voice-state", (data: { isSpeaking: boolean; isMuted?: boolean }) => {
@@ -182,45 +224,210 @@ io.on("connection", (socket) => {
   });
 
   // 5. Convoy Quick Alert / Ping (e.g. Danger, Pitstop, Police, Lost)
-  socket.on("convoy-alert", (data: { type: string; message: string; coords?: [number, number] }) => {
+  socket.on("convoy-alert", (data: { type?: string; title?: string; message?: string; coords?: [number, number] } | string) => {
     const rider = riders[socket.id];
     if (!rider) return;
+
+    let alertType = "INFO";
+    let alertTitle = "Peringatan Konvoi";
+    let alertMessage = "Peringatan!";
+    let alertCoords = rider.coords;
+
+    if (typeof data === "string") {
+      alertTitle = data;
+      alertMessage = data;
+    } else if (data && typeof data === "object") {
+      if (data.type) alertType = data.type;
+      if (data.title) alertTitle = data.title;
+      if (data.message) alertMessage = data.message;
+      if (!data.title && data.message) alertTitle = data.message;
+      if (data.coords) alertCoords = data.coords;
+    }
 
     const alertPayload = {
       id: `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       userId: socket.id,
       username: rider.username,
-      type: data.type || "INFO",
-      message: data.message || "Alert!",
-      coords: data.coords || rider.coords,
+      type: alertType,
+      title: alertTitle,
+      message: alertMessage,
+      coords: alertCoords,
       timestamp: Date.now(),
     };
 
+    console.log(`[CONVOY ALERT] ${rider.username} (${socket.id}) in room ${rider.roomId}: [${alertType}] ${alertTitle} - ${alertMessage}`);
     io.to(rider.roomId).emit("convoy-alert", alertPayload);
   });
 
-  // 6. DJ Kapten Music Sharing State
-  socket.on("dj-music-state", (data: { isPlaying: boolean; trackTitle?: string }) => {
+  // 6. DJ Kapten Music Sharing - Single Exclusive DJ Lock (First-Come First-Served)
+  socket.on("claim-dj", (callback?: (res: { success: boolean; djState: RoomDJState; message?: string }) => void) => {
     const rider = riders[socket.id];
     if (!rider) return;
+    const roomId = rider.roomId;
+    const current = roomDJs[roomId];
 
-    socket.to(rider.roomId).emit("dj-music-state", {
-      userId: socket.id,
-      djName: rider.username,
-      isPlaying: !!data.isPlaying,
-      trackTitle: data.trackTitle || "Musik Touring",
-    });
+    // Deteksi apakah DJ saat ini sudah offline / socket putus / keluar kamar (Stale DJ Lock)
+    let isStale = false;
+    if (current && current.isDjActive && current.activeDjId) {
+      const activeDjSocket = io.sockets.sockets.get(current.activeDjId);
+      const activeDjRider = riders[current.activeDjId];
+      // Jika socket sudah tidak aktif, rider tidak terdaftar, atau beda room: lock dianggap kadaluarsa
+      if (!activeDjSocket || !activeDjSocket.connected || !activeDjRider || activeDjRider.roomId !== roomId) {
+        isStale = true;
+        console.log(`[DJ STALE DETECTED] Previous DJ ${current.activeDjName} (${current.activeDjId}) is no longer connected in room ${roomId}. Auto-releasing lock.`);
+      }
+    }
+
+    // Deteksi jika rider yang sama melakukan reclaim (misal refresh browser)
+    const isSameUserReclaiming =
+      current &&
+      current.activeDjName &&
+      current.activeDjName.trim().toLowerCase() === rider.username.trim().toLowerCase();
+
+    // Jika rider lain yang aktif dan sah sedang memegang kursi DJ, tolak klaim
+    if (current && current.isDjActive && current.activeDjId && current.activeDjId !== socket.id && !isStale && !isSameUserReclaiming) {
+      const busyMessage = `DJ sedang dikontrol oleh ${current.activeDjName || "rider lain"}.`;
+      console.log(`[DJ REJECT] ${rider.username} attempted to claim DJ in ${roomId}, but legitimately held by ${current.activeDjName}`);
+      if (typeof callback === "function") {
+        callback({ success: false, djState: current, message: busyMessage });
+      }
+      socket.emit("dj-claim-rejected", { message: busyMessage, djState: current });
+      return;
+    }
+
+    // Clear any disconnect timer for this room
+    if (djDisconnectTimers[roomId]) {
+      clearTimeout(djDisconnectTimers[roomId]);
+      delete djDisconnectTimers[roomId];
+    }
+
+    // Berikan status DJ kepada rider ini (pertahankan status play jika rider yang sama mereclaim)
+    const newDjState: RoomDJState = {
+      activeDjId: socket.id,
+      activeDjName: rider.username,
+      isDjActive: true,
+      isPlaying: isSameUserReclaiming && current ? current.isPlaying : false,
+      trackTitle: isSameUserReclaiming && current ? current.trackTitle : "",
+    };
+    roomDJs[roomId] = newDjState;
+    console.log(`[DJ CLAIMED] ${rider.username} (${socket.id}) is now the exclusive DJ Kapten for room ${roomId}`);
+
+    io.to(roomId).emit("dj-music-state", newDjState);
+
+    if (typeof callback === "function") {
+      callback({ success: true, djState: newDjState });
+    }
   });
 
-  // 7. Disconnect handler
+  // Release DJ lock so other riders can take over
+  socket.on("release-dj", () => {
+    const rider = riders[socket.id];
+    if (!rider) return;
+    const roomId = rider.roomId;
+    const current = roomDJs[roomId];
+
+    if (djDisconnectTimers[roomId]) {
+      clearTimeout(djDisconnectTimers[roomId]);
+      delete djDisconnectTimers[roomId];
+    }
+
+    if (current && (current.activeDjId === socket.id || current.activeDjName === rider.username)) {
+      console.log(`[DJ RELEASED] ${rider.username} released DJ Kapten seat for room ${roomId}`);
+      const releasedState: RoomDJState = {
+        activeDjId: null,
+        activeDjName: null,
+        isDjActive: false,
+        isPlaying: false,
+        trackTitle: "",
+      };
+      roomDJs[roomId] = releasedState;
+      io.to(roomId).emit("dj-music-state", releasedState);
+    }
+  });
+
+  // Emergency Force-Release / Reset DJ Lock (Bila user sebelumnya keluar tanpa sempat lepas DJ)
+  socket.on("force-release-dj", (callback?: (res: { success: boolean }) => void) => {
+    const rider = riders[socket.id];
+    if (!rider) return;
+    const roomId = rider.roomId;
+
+    if (djDisconnectTimers[roomId]) {
+      clearTimeout(djDisconnectTimers[roomId]);
+      delete djDisconnectTimers[roomId];
+    }
+
+    console.log(`[DJ FORCE-RELEASE] DJ seat in room ${roomId} reset by ${rider.username}`);
+    const releasedState: RoomDJState = {
+      activeDjId: null,
+      activeDjName: null,
+      isDjActive: false,
+      isPlaying: false,
+      trackTitle: "",
+    };
+    roomDJs[roomId] = releasedState;
+    io.to(roomId).emit("dj-music-state", releasedState);
+    if (typeof callback === "function") {
+      callback({ success: true });
+    }
+  });
+
+  // Active DJ Updates Playback State
+  socket.on("dj-music-state", (data: { isPlaying?: boolean; trackTitle?: string }) => {
+    const rider = riders[socket.id];
+    if (!rider) return;
+    const roomId = rider.roomId;
+    const current = roomDJs[roomId];
+
+    // Only allow playback update if this socket is the registered active DJ
+    if (current && current.activeDjId === socket.id) {
+      current.isPlaying = !!data.isPlaying;
+      if (data.trackTitle !== undefined) {
+        current.trackTitle = data.trackTitle;
+      }
+      io.to(roomId).emit("dj-music-state", current);
+    }
+  });
+
+  // 7. Disconnect handler with Grace Period for poor cellular connectivity
   socket.on("disconnect", () => {
     const rider = riders[socket.id];
-    if (rider) {
-      const { roomId, username } = rider;
-      console.log(`[LEAVE] ${username} (${socket.id}) disconnected from ${roomId}`);
-      socket.to(roomId).emit("user-disconnected", socket.id);
-      delete riders[socket.id];
+    const roomId = rider ? rider.roomId : null;
+    const username = rider ? rider.username : "Unknown";
+
+    console.log(`[LEAVE] ${username} (${socket.id}) disconnected`);
+
+    // Periksa apakah socket ini memegang status DJ Kapten
+    for (const [rId, dj] of Object.entries(roomDJs)) {
+      if (dj.isDjActive && (dj.activeDjId === socket.id || (rider && dj.activeDjName === rider.username))) {
+        console.log(`[DJ GRACE PERIOD] Active DJ ${username} (${socket.id}) disconnected. Starting 25s grace period for room ${rId}...`);
+
+        if (djDisconnectTimers[rId]) {
+          clearTimeout(djDisconnectTimers[rId]);
+        }
+
+        // Tahan status DJ selama 25 detik agar jika koneksi HP putus-nyambung karena sinyal jelek, musik tidak terputus
+        djDisconnectTimers[rId] = setTimeout(() => {
+          console.log(`[DJ AUTO-RELEASE] Grace period expired for room ${rId}. Freeing DJ seat.`);
+          delete djDisconnectTimers[rId];
+          const releasedState: RoomDJState = {
+            activeDjId: null,
+            activeDjName: null,
+            isDjActive: false,
+            isPlaying: false,
+            trackTitle: "",
+          };
+          roomDJs[rId] = releasedState;
+          io.to(rId).emit("dj-music-state", releasedState);
+        }, 25000);
+      }
     }
+
+    if (roomId) {
+      // Beritahu seluruh rider di room bahwa user telah disconnect
+      io.to(roomId).emit("user-disconnected", { userId: socket.id });
+    }
+
+    delete riders[socket.id];
   });
 });
 
@@ -230,6 +437,20 @@ setInterval(() => {
   for (const [id, rider] of Object.entries(riders)) {
     if (now - rider.lastUpdated > 10 * 60 * 1000) {
       console.log(`[CLEANUP] Purged inactive rider: ${rider.username}`);
+      const roomId = rider.roomId;
+      const currentDj = roomDJs[roomId];
+      if (currentDj && currentDj.activeDjId === id) {
+        console.log(`[DJ AUTO-RELEASE] Inactive DJ ${rider.username} purged. Freeing DJ seat for room ${roomId}`);
+        const releasedState: RoomDJState = {
+          activeDjId: null,
+          activeDjName: null,
+          isDjActive: false,
+          isPlaying: false,
+          trackTitle: "",
+        };
+        roomDJs[roomId] = releasedState;
+        io.to(roomId).emit("dj-music-state", releasedState);
+      }
       delete riders[id];
     }
   }

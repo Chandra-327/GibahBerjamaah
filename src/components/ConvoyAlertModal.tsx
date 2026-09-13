@@ -4,7 +4,11 @@ import { AlertTriangle, Coffee, Fuel, ShieldAlert, Users, CloudRain, X, Send } f
 interface ConvoyAlertModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSendAlert: (type: 'DANGER' | 'REST' | 'POLICE' | 'FUEL' | 'LOST' | 'INFO', message: string) => void;
+  onSendAlert: (
+    type: 'DANGER' | 'REST' | 'POLICE' | 'FUEL' | 'LOST' | 'INFO',
+    title: string,
+    message: string
+  ) => void;
 }
 
 const PRESET_ALERTS = [
@@ -87,7 +91,7 @@ export const ConvoyAlertModal: React.FC<ConvoyAlertModalProps> = ({ isOpen, onCl
               <button
                 key={alert.label}
                 onClick={() => {
-                  onSendAlert(alert.type, alert.label);
+                  onSendAlert(alert.type, alert.label, alert.desc);
                   onClose();
                 }}
                 className={`p-3.5 rounded-2xl border text-left flex flex-col gap-2 transition-transform active:scale-95 shadow-lg ${alert.color}`}
@@ -124,7 +128,7 @@ export const ConvoyAlertModal: React.FC<ConvoyAlertModalProps> = ({ isOpen, onCl
             <button
               onClick={() => {
                 if (customText.trim()) {
-                  onSendAlert('INFO', customText.trim());
+                  onSendAlert('INFO', 'Pesan Khusus', customText.trim());
                   setCustomText('');
                   onClose();
                 }

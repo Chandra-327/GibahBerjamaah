@@ -9,7 +9,9 @@
     "start": "node dist/server.cjs",
     "lint": "tsc --noEmit",
     "cap:sync": "cap sync android",
-    "cap:build": "npm run build && cap sync android"
+    "cap:build": "npm run build && cap sync android",
+    "cap:run": "cap run android",
+    "android:install": "cd android && ./gradlew installDebug"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.1",
