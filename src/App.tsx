@@ -155,11 +155,27 @@ export default function App() {
       return `http://${ip}:${port}`;
     }
 
-    // Default Cloud Mode
-    const isCapacitor = window.location.origin.includes('localhost') || window.location.protocol === 'capacitor:';
-    return isCapacitor
-      ? 'https://ais-dev-nt5vlkutdhvovsi6b6zjj7-121868158767.asia-east1.run.app'
-      : undefined;
+    // Default Cloud Server URL
+    const CLOUD_URL = 'https://ais-dev-nt5vlkutdhvovsi6b6zjj7-121868158767.asia-east1.run.app';
+
+    // Deteksi lingkungan Native Android (Capacitor) atau local bundle
+    const isNativeCapacitor =
+      typeof (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor?.isNativePlatform === 'function'
+        ? (window as unknown as { Capacitor: { isNativePlatform: () => boolean } }).Capacitor.isNativePlatform()
+        : window.location.origin.includes('localhost') ||
+          window.location.protocol === 'capacitor:' ||
+          window.location.protocol === 'file:' ||
+          window.location.hostname === 'localhost' ||
+          window.location.port === '' ||
+          !window.location.origin.includes('run.app');
+
+    // Jika berjalan di native app (APK), wajib arahkan ke cloud signaling server
+    if (isNativeCapacitor) {
+      return CLOUD_URL;
+    }
+
+    // Jika berjalan di browser web biasa pada domain server, gunakan origin atau CLOUD_URL
+    return window.location.origin.startsWith('http') ? window.location.origin : CLOUD_URL;
   }, []);
 
   // Update dan simpan Hotspot Config
@@ -184,10 +200,14 @@ export default function App() {
 
       const socket = io(serverUrl, {
         transports: ['websocket', 'polling'],
+        path: '/socket.io/',
         reconnection: true,
         reconnectionAttempts: Infinity,
         reconnectionDelay: 1000,
         reconnectionDelayMax: 4000,
+        timeout: 10000,
+        autoConnect: true,
+        forceNew: true,
       });
 
       socketRef.current = socket;
@@ -497,14 +517,21 @@ export default function App() {
               </span>
             </div>
             <div className="flex items-center gap-2 text-[10px] text-zinc-400 font-medium">
-              <span className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={handleManualReconnect}
+                className="flex items-center gap-1 hover:text-white transition active:scale-95"
+                title="Status Signaling Socket. Klik untuk Paksa Sambung Ulang."
+              >
                 {isConnected ? (
                   <Wifi className="w-3 h-3 text-emerald-400" />
                 ) : (
                   <WifiOff className="w-3 h-3 text-red-400 animate-pulse" />
                 )}
-                {isConnected ? 'WSS Online' : 'Reconnecting...'}
-              </span>
+                <span className={isConnected ? 'text-emerald-400' : 'text-amber-400 font-bold underline'}>
+                  {isConnected ? 'WSS Online' : 'Tap Reconnect'}
+                </span>
+              </button>
               {(isMusicPlaying || activeDjState?.isPlaying) && (
                 <>
                   <span>•</span>
@@ -777,6 +804,8 @@ export default function App() {
         isOpen={isHotspotModalOpen}
         onClose={() => setIsHotspotModalOpen(false)}
         config={hotspotConfig}
+        isConnected={isConnected}
+        onReconnectNow={handleManualReconnect}
         onSaveConfig={(newConfig) => {
           handleSaveHotspotConfig(newConfig);
           // Jika sudah di dalam room, otomatis sambungkan ulang socket signaling ke mode baru
