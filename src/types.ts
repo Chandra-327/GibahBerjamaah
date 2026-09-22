@@ -52,3 +52,11 @@ export interface MusicTrack {
   lastModified: number;
 }
 
+export type NetworkConnectionMode = 'CLOUD' | 'HOTSPOT_LOCAL';
+
+export interface HotspotConfig {
+  mode: NetworkConnectionMode;
+  hotspotIp: string; // e.g. '192.168.43.1' (Android default) or custom IP
+  port: number; // default 3000
+}
+

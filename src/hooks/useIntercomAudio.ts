@@ -187,6 +187,12 @@ export function useIntercomAudio({
   const [connectedPeersCount, setConnectedPeersCount] = useState<number>(0);
   const knownRoomUsersRef = useRef<string[]>([]);
 
+  // Out-of-Range Alarm & Auto-Reconnect State Tracking
+  const lastKnownOnlinePeersRef = useRef<number>(0);
+  const wasOutOfRangeRef = useRef<boolean>(false);
+  const lastAlarmPlayedAtRef = useRef<number>(0);
+  const outOfRangeTimerRef = useRef<number | null>(null);
+
   // ICE Servers (High-Availability Google, Cloudflare, Twilio STUN + OpenRelay TURN for Mobile 4G/5G/CGNAT)
   const iceServers: RTCConfiguration = {
     iceServers: [
@@ -988,7 +994,7 @@ export function useIntercomAudio({
     return () => clearInterval(watchdogInterval);
   }, [audioStatus, restartAudioStream]);
 
-  // Sinkronisasi status jumlah peer audio yang benar-benar terhubung
+  // Sinkronisasi status jumlah peer audio yang benar-benar terhubung + Alarm Ringan Keluar/Masuk Jangkauan
   const updateConnectedPeersCount = useCallback(() => {
     let count = 0;
     (Object.values(peersRef.current) as RTCPeerConnection[]).forEach((pc) => {
@@ -1000,8 +1006,55 @@ export function useIntercomAudio({
         count += 1;
       }
     });
+
     setConnectedPeersCount(count);
-  }, []);
+
+    // Deteksi jika sebelumnya sudah pernah tersambung ke rider lain (rombongan), lalu tiba-tiba terputus / keluar jangkauan
+    if (count > 0) {
+      lastKnownOnlinePeersRef.current = count;
+
+      // Jika sebelumnya sempat keluar jangkauan dan sekarang berhasil tersambung kembali
+      if (wasOutOfRangeRef.current) {
+        console.log('[Intercom Watchdog] Masuk kembali ke dalam jangkauan! Membunyikan nada sambut...');
+        wasOutOfRangeRef.current = false;
+        if (outOfRangeTimerRef.current) {
+          window.clearTimeout(outOfRangeTimerRef.current);
+          outOfRangeTimerRef.current = null;
+        }
+        playIntercomChirp('in-range');
+        showDeviceToast('📶 Masuk jangkauan! Terhubung otomatis.');
+      }
+    } else if (count === 0 && lastKnownOnlinePeersRef.current > 0) {
+      // Hanya picu alarm jika terputus selama > 2.5 detik (menghindari alarm palsu saat pergantian jalur ICE sejenak)
+      if (!outOfRangeTimerRef.current && !wasOutOfRangeRef.current) {
+        outOfRangeTimerRef.current = window.setTimeout(() => {
+          outOfRangeTimerRef.current = null;
+          // Periksa kembali apakah masih 0 peer
+          let currentCheck = 0;
+          (Object.values(peersRef.current) as RTCPeerConnection[]).forEach((pc) => {
+            if (
+              pc.iceConnectionState === 'connected' ||
+              pc.iceConnectionState === 'completed' ||
+              pc.connectionState === 'connected'
+            ) {
+              currentCheck += 1;
+            }
+          });
+
+          if (currentCheck === 0) {
+            const now = Date.now();
+            if (now - lastAlarmPlayedAtRef.current > 12000) {
+              console.warn('[Intercom Watchdog] Di luar jangkauan rombongan! Membunyikan alarm...');
+              lastAlarmPlayedAtRef.current = now;
+              wasOutOfRangeRef.current = true;
+              playIntercomChirp('out-of-range');
+              showDeviceToast('⚠️ Di luar jangkauan sinyal! Otomatis konek saat mendekat.');
+            }
+          }
+        }, 2500);
+      }
+    }
+  }, [showDeviceToast]);
 
   // Buat koneksi RTCPeerConnection baru dengan Jitter Smoothing Buffer & Dynamic Recovery
   const createPeerConnection = useCallback(

@@ -16,7 +16,10 @@ import { ConvoyAlertToast } from './components/ConvoyAlertToast';
 import { DJMusicModal } from './components/DJMusicModal';
 import { VolumeBoosterModal } from './components/VolumeBoosterModal';
 import { AudioDeviceModal } from './components/AudioDeviceModal';
-import { Radio, Wifi, WifiOff, Users, Battery, LogOut, Info, Music, Zap, Headphones, Bluetooth } from 'lucide-react';
+import { OfflineHotspotModal } from './components/OfflineHotspotModal';
+import { PWAInstallButton } from './components/PWAInstallButton';
+import { Radio, Wifi, WifiOff, Users, Battery, LogOut, Info, Music, Zap, Headphones, Bluetooth, Router } from 'lucide-react';
+import { HotspotConfig } from './types';
 
 export default function App() {
   const [isJoined, setIsJoined] = useState(false);
@@ -54,8 +57,16 @@ export default function App() {
   const [isAudioDeviceModalOpen, setIsAudioDeviceModalOpen] = useState(false);
   const [activeDjState, setActiveDjState] = useState<DJMusicState | null>(null);
 
-  // Networking state
+  // Networking & Signal Mode state
   const [isConnected, setIsConnected] = useState(false);
+  const [isHotspotModalOpen, setIsHotspotModalOpen] = useState(false);
+  const [hotspotConfig, setHotspotConfig] = useState<HotspotConfig>(() => {
+    try {
+      const saved = localStorage.getItem('gibah_hotspot_config');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return { mode: 'CLOUD', hotspotIp: '192.168.43.1', port: 3000 };
+  });
   const socketRef = useRef<Socket | null>(null);
   const [socketInstance, setSocketInstance] = useState<Socket | null>(null);
 
@@ -136,11 +147,201 @@ export default function App() {
     onToggleMute: toggleMute,
   });
 
+  // Helper untuk menentukan Server Signaling Socket.io URL (Cloud vs Hotspot Lokal Blank Spot)
+  const getSignalingUrl = useCallback((cfg: HotspotConfig) => {
+    if (cfg.mode === 'HOTSPOT_LOCAL') {
+      const ip = (cfg.hotspotIp || '192.168.43.1').trim();
+      const port = cfg.port || 3000;
+      return `http://${ip}:${port}`;
+    }
+
+    // Default Cloud Mode
+    const isCapacitor = window.location.origin.includes('localhost') || window.location.protocol === 'capacitor:';
+    return isCapacitor
+      ? 'https://ais-dev-nt5vlkutdhvovsi6b6zjj7-121868158767.asia-east1.run.app'
+      : undefined;
+  }, []);
+
+  // Update dan simpan Hotspot Config
+  const handleSaveHotspotConfig = useCallback((newConfig: HotspotConfig) => {
+    setHotspotConfig(newConfig);
+    try {
+      localStorage.setItem('gibah_hotspot_config', JSON.stringify(newConfig));
+    } catch {}
+  }, []);
+
+  // Inisiasi dan sambung ulang Socket.io signaling
+  const connectSignalingSocket = useCallback(
+    (name: string, room: string, cfg: HotspotConfig) => {
+      if (socketRef.current) {
+        socketRef.current.removeAllListeners();
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+
+      const serverUrl = getSignalingUrl(cfg);
+      console.log(`[Socket] Connecting to signaling server (${cfg.mode}):`, serverUrl || 'Same-origin');
+
+      const socket = io(serverUrl, {
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 4000,
+      });
+
+      socketRef.current = socket;
+      setSocketInstance(socket);
+
+      socket.on('connect', () => {
+        console.log(`[Socket] Connected to signaling server: ${socket.id}`);
+        setIsConnected(true);
+        socket.emit('join-room', {
+          roomId: room,
+          username: name,
+          battery: batteryLevel,
+          coords: myCoords,
+        });
+      });
+
+      socket.on('disconnect', () => {
+        console.warn('[Socket] Disconnected from signaling server. Auto-reconnecting...');
+        setIsConnected(false);
+      });
+
+      socket.on('connect_error', (err) => {
+        console.warn('[Socket] Connection error:', err.message);
+      });
+
+      // Populate existing riders in room
+      socket.on('room-users', (data: { roomId: string; users: Rider[] }) => {
+        console.log('[Socket] Existing room users:', data.users);
+        setRiders(data.users || []);
+      });
+
+      // Rider baru bergabung
+      socket.on('user-connected', (data: { userId: string; username: string; battery?: number; coords?: [number, number] }) => {
+        setRiders((prev) => {
+          if (prev.some((r) => r.userId === data.userId)) return prev;
+          return [
+            ...prev,
+            {
+              userId: data.userId,
+              username: data.username,
+              battery: data.battery ?? 100,
+              coords: data.coords ?? null,
+              heading: null,
+              speed: null,
+              isMuted: false,
+              isSpeaking: false,
+              lastSeen: Date.now(),
+            },
+          ];
+        });
+      });
+
+      // Rider disconnect / keluar room
+      socket.on('user-disconnected', (data: { userId: string } | string) => {
+        const disconnectedId = typeof data === 'string' ? data : data?.userId;
+        if (!disconnectedId) return;
+        console.log('[Socket] User disconnected from room:', disconnectedId);
+        setRiders((prev) => prev.filter((r) => r.userId !== disconnectedId));
+
+        // Jika rider yang keluar adalah DJ yang sedang aktif, langsung reset status DJ di App.tsx
+        setActiveDjState((current) => {
+          if (current && current.activeDjId === disconnectedId) {
+            console.log('[DJ] Active DJ disconnected, clearing App.tsx activeDjState');
+            return {
+              activeDjId: null,
+              activeDjName: null,
+              isDjActive: false,
+              isPlaying: false,
+              trackTitle: '',
+            };
+          }
+          return current;
+        });
+      });
+
+      // Remote metadata updates (GPS, battery, etc.)
+      socket.on('metadata-updated', (data: {
+        userId: string;
+        username: string;
+        coords?: [number, number];
+        battery?: number;
+        heading?: number | null;
+        speed?: number | null;
+        isMuted?: boolean;
+        isSpeaking?: boolean;
+      }) => {
+        setRiders((prev) => {
+          const index = prev.findIndex((r) => r.userId === data.userId);
+          if (index >= 0) {
+            const updated = [...prev];
+            updated[index] = {
+              ...updated[index],
+              ...data,
+              lastSeen: Date.now(),
+            };
+            return updated;
+          } else {
+            return [
+              ...prev,
+              {
+                userId: data.userId,
+                username: data.username,
+                coords: data.coords,
+                battery: data.battery,
+                heading: data.heading,
+                speed: data.speed,
+                isMuted: data.isMuted,
+                isSpeaking: data.isSpeaking,
+                lastSeen: Date.now(),
+              },
+            ];
+          }
+        });
+      });
+
+      // Convoy Alert Broadcast Listener
+      socket.on('convoy-alert', (alert: ConvoyAlert) => {
+        console.log('[Alert] Incoming convoy alert:', alert);
+        setActiveAlert(alert);
+        setAlertHistory((prev) => [alert, ...prev.slice(0, 49)]);
+        playIntercomChirp('alert');
+      });
+
+      // DJ Music State Broadcast Listener (from Kapten)
+      socket.on('dj-music-state', (djState: DJMusicState) => {
+        console.log('[DJ] Remote DJ State received:', djState);
+        setActiveDjState(djState);
+      });
+    },
+    [getSignalingUrl, batteryLevel, myCoords]
+  );
+
+  // Manual trigger Reconnect Signaling Socket
+  const handleManualReconnect = useCallback(() => {
+    if (callsign) {
+      connectSignalingSocket(callsign, roomId, hotspotConfig);
+    }
+  }, [callsign, roomId, hotspotConfig, connectSignalingSocket]);
+
   // Join Room Execution
-  const handleJoin = async (name: string, room: string, selectedMode: IntercomMode) => {
+  const handleJoin = async (
+    name: string,
+    room: string,
+    selectedMode: IntercomMode,
+    selectedHotspotConfig?: HotspotConfig
+  ) => {
     setCallsign(name);
     setRoomId(room);
     setMode(selectedMode);
+
+    const activeConfig = selectedHotspotConfig || hotspotConfig;
+    if (selectedHotspotConfig) {
+      handleSaveHotspotConfig(selectedHotspotConfig);
+    }
 
     // 1. Resume AudioContext instantly during user click gesture to unlock mobile autoplay
     try {
@@ -156,141 +357,8 @@ export default function App() {
     // 4. Request microphone FIRST so audio track is ready before signaling begins
     await initMicrophone();
 
-    // 5. Connect Socket.io
-    const socket = io({
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionAttempts: Infinity,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-    });
-
-    socketRef.current = socket;
-    setSocketInstance(socket);
-
-    socket.on('connect', () => {
-      console.log(`[Socket] Connected: ${socket.id}`);
-      setIsConnected(true);
-      socket.emit('join-room', {
-        roomId: room,
-        username: name,
-        battery: batteryLevel,
-        coords: myCoords,
-      });
-    });
-
-    socket.on('disconnect', () => {
-      console.warn('[Socket] Disconnected. Waiting to reconnect...');
-      setIsConnected(false);
-    });
-
-    socket.on('connect_error', (err) => {
-      console.warn('[Socket] Connection error:', err.message);
-    });
-
-    // Populate existing riders in room
-    socket.on('room-users', (data: { roomId: string; users: Rider[] }) => {
-      console.log('[Socket] Existing room users:', data.users);
-      setRiders(data.users || []);
-    });
-
-    // Rider baru bergabung
-    socket.on('user-connected', (data: { userId: string; username: string; battery?: number; coords?: [number, number] }) => {
-      setRiders((prev) => {
-        if (prev.some((r) => r.userId === data.userId)) return prev;
-        return [
-          ...prev,
-          {
-            userId: data.userId,
-            username: data.username,
-            battery: data.battery ?? 100,
-            coords: data.coords ?? null,
-            heading: null,
-            speed: null,
-            isMuted: false,
-            isSpeaking: false,
-            lastSeen: Date.now(),
-          },
-        ];
-      });
-    });
-
-    // Rider disconnect / keluar room
-    socket.on('user-disconnected', (data: { userId: string } | string) => {
-      const disconnectedId = typeof data === 'string' ? data : data?.userId;
-      if (!disconnectedId) return;
-      console.log('[Socket] User disconnected from room:', disconnectedId);
-      setRiders((prev) => prev.filter((r) => r.userId !== disconnectedId));
-
-      // Jika rider yang keluar adalah DJ yang sedang aktif, langsung reset status DJ di App.tsx
-      setActiveDjState((current) => {
-        if (current && current.activeDjId === disconnectedId) {
-          console.log('[DJ] Active DJ disconnected, clearing App.tsx activeDjState');
-          return {
-            activeDjId: null,
-            activeDjName: null,
-            isDjActive: false,
-            isPlaying: false,
-            trackTitle: '',
-          };
-        }
-        return current;
-      });
-    });
-
-    // Remote metadata updates (GPS, battery, etc.)
-    socket.on('metadata-updated', (data: {
-      userId: string;
-      username: string;
-      coords?: [number, number];
-      battery?: number;
-      heading?: number | null;
-      speed?: number | null;
-      isMuted?: boolean;
-      isSpeaking?: boolean;
-    }) => {
-      setRiders((prev) => {
-        const index = prev.findIndex((r) => r.userId === data.userId);
-        if (index >= 0) {
-          const updated = [...prev];
-          updated[index] = {
-            ...updated[index],
-            ...data,
-            lastSeen: Date.now(),
-          };
-          return updated;
-        } else {
-          return [
-            ...prev,
-            {
-              userId: data.userId,
-              username: data.username,
-              coords: data.coords,
-              battery: data.battery,
-              heading: data.heading,
-              speed: data.speed,
-              isMuted: data.isMuted,
-              isSpeaking: data.isSpeaking,
-              lastSeen: Date.now(),
-            },
-          ];
-        }
-      });
-    });
-
-    // Convoy Alert Broadcast Listener
-    socket.on('convoy-alert', (alert: ConvoyAlert) => {
-      console.log('[Alert] Incoming convoy alert:', alert);
-      setActiveAlert(alert);
-      setAlertHistory((prev) => [alert, ...prev.slice(0, 49)]);
-      playIntercomChirp('alert');
-    });
-
-    // DJ Music State Broadcast Listener (from Kapten)
-    socket.on('dj-music-state', (djState: DJMusicState) => {
-      console.log('[DJ] Remote DJ State received:', djState);
-      setActiveDjState(djState);
-    });
+    // 5. Connect Socket.io (Mendukung Web browser dan Native Android APK / Hotspot Blank Spot)
+    connectSignalingSocket(name, room, activeConfig);
 
     setIsJoined(true);
   };
@@ -392,7 +460,13 @@ export default function App() {
           defaultMode={mode}
           onJoin={handleJoin}
           batteryLevel={batteryLevel}
+          hotspotConfig={hotspotConfig}
+          onUpdateHotspotConfig={handleSaveHotspotConfig}
         />
+        {/* PWA Floating Install Helper */}
+        <div className="p-4 flex justify-center bg-black/80">
+          <PWAInstallButton />
+        </div>
       </div>
     );
   }
@@ -408,8 +482,8 @@ export default function App() {
 
   return (
     <div className="h-screen w-screen bg-black text-white flex flex-col overflow-hidden select-none">
-      {/* Top HUD Status Bar */}
-      <header className="h-14 bg-zinc-950/90 backdrop-blur border-b border-zinc-800/80 px-3 flex items-center justify-between z-30 shrink-0">
+      {/* Top HUD Status Bar (Disetel dengan padding safe-area atas agar tidak tertutup notch atau icon baterai/sinyal Android) */}
+      <header className="min-h-14 hud-top-safe pb-2 bg-zinc-950/95 backdrop-blur border-b border-zinc-800/80 px-3 flex items-center justify-between z-30 shrink-0">
         {/* Left: Branding & Intercom Status */}
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center">
@@ -498,6 +572,22 @@ export default function App() {
           >
             <Zap className={`w-3.5 h-3.5 ${receiverVolume > 1.0 ? 'text-emerald-400' : 'text-zinc-400'}`} />
             <span>{Math.round(receiverVolume * 100)}%</span>
+          </button>
+
+          {/* Network Mode (Cloud vs Hotspot Blank Spot) Switcher */}
+          <button
+            onClick={() => setIsHotspotModalOpen(true)}
+            className={`flex items-center gap-1 px-2 py-1 rounded-lg border text-xs font-bold transition active:scale-95 ${
+              hotspotConfig.mode === 'HOTSPOT_LOCAL'
+                ? 'bg-amber-950/80 border-amber-500/80 text-amber-300 shadow-sm shadow-amber-500/20'
+                : 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:text-white'
+            }`}
+            title={`Mode Sinyal: ${hotspotConfig.mode === 'HOTSPOT_LOCAL' ? 'Hotspot Offline (Blank Spot)' : 'Online Cloud'}`}
+          >
+            <Router className={`w-3.5 h-3.5 ${hotspotConfig.mode === 'HOTSPOT_LOCAL' ? 'text-amber-400 animate-pulse' : 'text-zinc-400'}`} />
+            <span className="hidden sm:inline text-[11px] font-mono">
+              {hotspotConfig.mode === 'HOTSPOT_LOCAL' ? 'Hotspot' : 'Cloud'}
+            </span>
           </button>
 
           {/* Battery Status */}
@@ -680,6 +770,20 @@ export default function App() {
       <BatteryGuideModal
         isOpen={isBatteryGuideOpen}
         onClose={() => setIsBatteryGuideOpen(false)}
+      />
+
+      {/* Offline Hotspot Modal */}
+      <OfflineHotspotModal
+        isOpen={isHotspotModalOpen}
+        onClose={() => setIsHotspotModalOpen(false)}
+        config={hotspotConfig}
+        onSaveConfig={(newConfig) => {
+          handleSaveHotspotConfig(newConfig);
+          // Jika sudah di dalam room, otomatis sambungkan ulang socket signaling ke mode baru
+          if (isJoined && callsign) {
+            connectSignalingSocket(callsign, roomId, newConfig);
+          }
+        }}
       />
     </div>
   );

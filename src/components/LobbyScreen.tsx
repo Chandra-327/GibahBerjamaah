@@ -1,16 +1,33 @@
 import React, { useState } from 'react';
-import { Radio, Mic, MapPin, Battery, ShieldCheck, ArrowRight, Zap, Info } from 'lucide-react';
-import { IntercomMode } from '../types';
+import { Radio, Mic, MapPin, Battery, ShieldCheck, ArrowRight, Zap, Info, Wifi, Globe, Settings2 } from 'lucide-react';
+import { IntercomMode, HotspotConfig, NetworkConnectionMode } from '../types';
+import { PWAInstallButton } from './PWAInstallButton';
+import { OfflineHotspotModal } from './OfflineHotspotModal';
 
 interface LobbyScreenProps {
-  onJoin: (callsign: string, roomId: string, mode: IntercomMode) => void;
+  onJoin: (callsign: string, roomId: string, mode: IntercomMode, hotspotConfig?: HotspotConfig) => void;
   batteryLevel: number;
+  defaultCallsign?: string;
+  defaultRoom?: string;
+  defaultMode?: IntercomMode;
+  hotspotConfig?: HotspotConfig;
+  onUpdateHotspotConfig?: (config: HotspotConfig) => void;
 }
 
-export const LobbyScreen: React.FC<LobbyScreenProps> = ({ onJoin, batteryLevel }) => {
-  const [callsign, setCallsign] = useState('');
-  const [roomId, setRoomId] = useState('GIBAH ON THE ROAD');
-  const [mode, setMode] = useState<IntercomMode>('ALWAYS_ON');
+export const LobbyScreen: React.FC<LobbyScreenProps> = ({
+  onJoin,
+  batteryLevel,
+  defaultCallsign = '',
+  defaultRoom = 'GIBAH ON THE ROAD',
+  defaultMode = 'ALWAYS_ON',
+  hotspotConfig = { mode: 'CLOUD', hotspotIp: '192.168.43.1', port: 3000 },
+  onUpdateHotspotConfig,
+}) => {
+  const [callsign, setCallsign] = useState(defaultCallsign);
+  const [roomId, setRoomId] = useState(defaultRoom);
+  const [mode, setMode] = useState<IntercomMode>(defaultMode);
+  const [currentHotspotConfig, setCurrentHotspotConfig] = useState<HotspotConfig>(hotspotConfig);
+  const [isHotspotModalOpen, setIsHotspotModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -20,24 +37,55 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({ onJoin, batteryLevel }
       return;
     }
     setIsSubmitting(true);
-    onJoin(callsign.trim(), roomId.trim().toUpperCase() || 'GIBAH ON THE ROAD', mode);
+    onJoin(
+      callsign.trim(),
+      roomId.trim().toUpperCase() || 'GIBAH ON THE ROAD',
+      mode,
+      currentHotspotConfig
+    );
+  };
+
+  const handleSaveHotspotConfig = (newConfig: HotspotConfig) => {
+    setCurrentHotspotConfig(newConfig);
+    if (onUpdateHotspotConfig) {
+      onUpdateHotspotConfig(newConfig);
+    }
   };
 
   return (
     <div className="min-h-screen w-full bg-zinc-950 text-white flex flex-col justify-between p-4 sm:p-6 select-none">
-      {/* Top Bar with PWA Install Prompt */}
+      {/* Top Bar with Mode Sinyal indicator & PWA Install */}
       <div className="w-full max-w-md mx-auto flex items-center justify-between pt-safe">
-        <div className="flex items-center gap-2">
-          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
-          <span className="text-[11px] font-mono tracking-widest text-emerald-400 font-bold uppercase">
-            STB NODE.JS READY
-          </span>
-        </div>
+        <button
+          type="button"
+          onClick={() => setIsHotspotModalOpen(true)}
+          className={`flex items-center gap-1.5 text-[11px] font-mono font-bold uppercase tracking-wider px-2.5 py-1 rounded-lg border transition ${
+            currentHotspotConfig.mode === 'HOTSPOT_LOCAL'
+              ? 'bg-amber-950/60 border-amber-500/50 text-amber-300'
+              : 'bg-zinc-900 border-zinc-800 text-emerald-400 hover:border-emerald-500/40'
+          }`}
+          title="Klik untuk ubah Mode Sinyal (Cloud / Hotspot HP)"
+        >
+          {currentHotspotConfig.mode === 'HOTSPOT_LOCAL' ? (
+            <>
+              <Wifi className="w-3.5 h-3.5 text-amber-400" />
+              <span>HOTSPOT: {currentHotspotConfig.hotspotIp}</span>
+            </>
+          ) : (
+            <>
+              <div className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+              <span>CLOUD ONLINE</span>
+            </>
+          )}
+          <Settings2 className="w-3 h-3 ml-0.5 opacity-60" />
+        </button>
+
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-1 text-[11px] font-mono text-zinc-400 bg-zinc-900 border border-zinc-800 px-2 py-1 rounded-lg">
             <Battery className="w-3.5 h-3.5 text-emerald-400" />
             <span>{batteryLevel}%</span>
           </div>
+          <PWAInstallButton />
         </div>
       </div>
 
@@ -75,7 +123,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({ onJoin, batteryLevel }
               maxLength={15}
               value={callsign}
               onChange={(e) => setCallsign(e.target.value)}
-              placeholder="Contoh: Chanz Kasep, Road Captain, Sweeper..."
+              placeholder="Contoh: Chanz Kasep, Road captain, Sweeper..."
               className="w-full px-4 py-3.5 rounded-2xl bg-zinc-900 border-2 border-zinc-700 text-white font-bold text-base placeholder-zinc-500 focus:outline-none focus:border-emerald-400 transition"
               autoFocus
             />
@@ -173,6 +221,15 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({ onJoin, batteryLevel }
           </span>
         </div>
       </div>
+
+      {/* Modal Pengaturan Hotspot / Blank Spot */}
+      <OfflineHotspotModal
+        isOpen={isHotspotModalOpen}
+        onClose={() => setIsHotspotModalOpen(false)}
+        config={currentHotspotConfig}
+        onSaveConfig={handleSaveHotspotConfig}
+        isConnected={false}
+      />
     </div>
   );
 };

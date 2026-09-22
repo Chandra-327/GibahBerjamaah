@@ -136,7 +136,7 @@ export const RiderListModal: React.FC<RiderListModalProps> = ({
                     </span>
                     <span>•</span>
                     <span className="font-mono">
-                      {rider.speed ? `${Math.round(rider.speed * 3.6)} km/h` : 'Diam'}
+                      {rider.speed && rider.speed > 2 ? `${Math.round(rider.speed)} km/h` : 'Diam'}
                     </span>
                   </div>
                 </div>

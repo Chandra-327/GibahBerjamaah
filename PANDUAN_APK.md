@@ -1,40 +1,57 @@
-# 📱 Panduan Mengunduh & Memasang APK Native "Gibah Berjamaah"
+# 📱 Panduan Build APK Native di Android Studio & Kunci Kelancaran Komunikasi Rider
 
-Proyek ini telah dikonversi menjadi **Aplikasi Native Android (Capacitor)** dengan konfigurasi izin hardware lengkap (Bluetooth SCO Headset, Mikrofon, Foreground Service, dan GPS Telemetri).
-
-Berikut 2 cara mudah untuk mendapatkan file `.apk`:
+Seluruh konfigurasi native Android (Capacitor), izin hardware Android (`AndroidManifest.xml`), izin WebView WebRTC (`MainActivity.java`), dan sinkronisasi server signaling (`Socket.io`) telah dirapikan secara menyeluruh agar semua rider bisa saling terhubung lancar tanpa hambatan browser.
 
 ---
 
-### Cara 1: Otomatis via GitHub Actions (Paling Mudah & Rekomendasi)
-Anda tidak perlu menginstall software apa pun di komputer!
+## 🛠️ Langkah Menjadikan APK Native di Android Studio
 
-1. Di pojok kanan atas Google AI Studio, buka menu **Settings** > pilih **Export to GitHub**.
-2. Berikan izin dan buat repositori baru (misal: `gibah-berjamaah-intercom`).
-3. Begitu kode terkirim ke GitHub Anda:
-   - Buka repositori Anda di GitHub.
-   - Klik tab **Actions** di menu atas.
-   - Anda akan melihat proses build otomatis bernama **"Build Android APK"** sedang berjalan.
-   - Setelah selesai (sekitar 2–3 menit), klik workflow tersebut dan unduh file di bagian **Artifacts** bernama:
-     👉 **`GibahBerjamaah-Interkom-APK`**
-4. Kirim file `.apk` tersebut ke HP Chanz (atau HP rider lain via WhatsApp / Telegram / Google Drive) lalu pasang (Install).
+### Langkah 1: Unduh Proyek dari AI Studio
+1. Di pojok kanan atas Google AI Studio, klik ikon **Settings** (⚙️) atau titik tiga.
+2. Pilih **Download as ZIP** (atau **Export to GitHub** jika terbiasa memakai Git).
+3. Ekstrak file ZIP tersebut di laptop / PC Anda (misal ke `C:\Projects\gibah-berjamaah` atau `/home/user/gibah-berjamaah`).
+
+### Langkah 2: Buka Folder Proyek di Android Studio
+1. Buka aplikasi **Android Studio** di laptop/PC Anda.
+2. Pada layar selamat datang, klik **Open** (atau menu **File > Open**).
+3. **PENTING:** Arahkan dan pilih folder **`android`** yang berada di dalam folder hasil ekstrak:
+   ```text
+   gibah-berjamaah/
+   └── android/   <--- PILIH FOLDER INI
+   ```
+4. Klik **OK / Open**.
+5. Tunggu Android Studio menyelesaikan proses **Gradle Sync & Indexing** (perhatikan bilah progres di pojok kanan bawah sampai selesai bertanda centang hijau).
+
+### Langkah 3: Build APK Debug (Siap Pakai untuk Semua Rider)
+1. Di menu bilah atas Android Studio, klik:
+   👉 **Build** > **Build Bundle(s) / APK(s)** > **Build APK(s)**
+2. Android Studio akan mengompilasi kode menjadi file `.apk`.
+3. Setelah proses selesai (biasanya 1–2 menit), akan muncul notifikasi pop-up di pojok kanan bawah:
+   > *"APK(s) generated successfully for module 'app'"*
+4. Klik tautan bertuliskan **locate** pada notifikasi tersebut, atau buka foldernya secara manual di:
+   ```text
+   android/app/build/outputs/apk/debug/app-debug.apk
+   ```
+5. Ubah nama file tersebut agar mudah dibagikan, misalnya: `GibahBerjamaah-v1.0.apk`.
+6. Kirim file `.apk` tersebut ke semua anggota rombongan touring melalui WhatsApp, Telegram, atau Google Drive.
 
 ---
 
-### Cara 2: Kompilasi Manual via Android Studio (Jika Punya Laptop)
-1. Di AI Studio, buka menu **Settings** > pilih **Download as ZIP**.
-2. Ekstrak file ZIP di komputer/laptop Anda.
-3. Buka software **Android Studio**, lalu pilih **Open Project** dan arahkan ke folder:
-   `folder-ekstrak/android`
-4. Tunggu proses *Gradle Sync* selesai.
-5. Klik menu atas: **Build** > **Build Bundle(s) / APK(s)** > **Build APK(s)**.
-6. File `.apk` langsung jadi di folder:
-   `android/app/build/outputs/apk/debug/app-debug.apk`
-7. Kirim ke HP dan pasang.
+## 🔒 4 Kunci Agar Semua Rider Terkoneksi Lancar & Suara Terdengar Jelas
 
----
+Aplikasi ini sudah diprogram dengan optimasi khusus rombongan motor:
 
-### Keunggulan Versi Native APK Ini:
-1. **Tidak Membisu di Xiaomi / HyperOS / MIUI:** Aplikasi memiliki izin `RECORD_AUDIO`, `MODIFY_AUDIO_SETTINGS`, dan `BLUETOOTH_CONNECT` resmi sehingga sistem Android memprioritaskan audio headset helm.
-2. **Tidak Dimatikan saat Layar Mati:** Menggunakan izin `FOREGROUND_SERVICE` dan `WAKE_LOCK` sehingga interkom tetap mengudara di saku celana atau saat membuka navigasi peta lain.
-3. **Penyambungan Otomatis:** Deteksi pergantian headset Bluetooth langsung direspon oleh driver audio Android tanpa batasan browser web.
+1. **Izin Otomatis WebRTC & Mikrofon (`MainActivity.java`)**:
+   - Native WebView telah dipasangi penangan `WebChromeClient.onPermissionRequest` otomatis. Saat APK dibuka, WebView langsung memberikan izin mikrofon dan GPS tanpa memicu popup browser yang sering macet di HP Xiaomi, Oppo, Vivo, dan Samsung.
+
+2. **Koneksi Lintas Jaringan (4G/5G/WiFi)**:
+   - Signaling Socket.io di dalam APK otomatis mengarah ke cloud server yang aktif, sehingga rider di jaringan Telkomsel, Indosat, XL, maupun Smartfren langsung bertemu di Room ID yang sama.
+   - Menggunakan multi-tier STUN/TURN server (Google, Cloudflare, Twilio, Metered) untuk menembus batasan NAT/firewall operator seluler saat di jalan raya.
+
+3. **Anti-Mati di Saku Celana (*Battery & Background Optimizations*)**:
+   - Saat rider pertama kali memasang APK, disarankan membuka:
+     *Pengaturan HP > Aplikasi > Gibah Berjamaah > Baterai / Penghemat Baterai* > pilih **"Tidak Ada Pembatasan" (No Restrictions)**.
+   - Hal ini memastikan Android tidak mematikan audio interkom saat layar HP mati atau saat rider membuka Google Maps.
+
+4. **Klinometer & Spidometer di Holder Motor**:
+   - Rider cukup memasang HP di holder setang motor, lalu tekan tombol **"Nolkan / Set Posisi Nol"** pada HUD Cockpit untuk mengkalibrasi kemiringan sesuai sudut holder masing-masing motor.

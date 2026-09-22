@@ -144,8 +144,8 @@ export function stopBackgroundAudioKeepAlive() {
   }
 }
 
-// Intercom Beep alert generator for convoy warnings & alerts (PTT chirp, danger chime)
-export function playIntercomChirp(type: 'ptt-on' | 'ptt-off' | 'alert' | 'join' | 'leave') {
+// Intercom Beep alert generator for convoy warnings & alerts (PTT chirp, danger chime, out-of-range alarm)
+export function playIntercomChirp(type: 'ptt-on' | 'ptt-off' | 'alert' | 'join' | 'leave' | 'out-of-range' | 'in-range') {
   try {
     const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!AudioContextClass) return;
@@ -203,6 +203,27 @@ export function playIntercomChirp(type: 'ptt-on' | 'ptt-off' | 'alert' | 'join' 
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
       osc.start(now);
       osc.stop(now + 0.25);
+    } else if (type === 'out-of-range') {
+      // Alarm nada ganda lembut (bukan bising tajam): 440Hz -> 330Hz lembut
+      // Memberitahu rider di helm bahwa sinyal hotspot/jaringan mulai di luar jangkauan
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(440, now);
+      osc.frequency.setValueAtTime(349.23, now + 0.14);
+      osc.frequency.setValueAtTime(293.66, now + 0.28);
+      gain.gain.setValueAtTime(0.18, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+      osc.start(now);
+      osc.stop(now + 0.45);
+    } else if (type === 'in-range') {
+      // Nada sambut kembali (C4 -> G4 -> C5 riang naik) saat sinyal masuk jangkauan lagi
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(523.25, now); // C5
+      osc.frequency.setValueAtTime(783.99, now + 0.1); // G5
+      osc.frequency.setValueAtTime(1046.5, now + 0.2); // C6
+      gain.gain.setValueAtTime(0.16, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
+      osc.start(now);
+      osc.stop(now + 0.38);
     }
 
     setTimeout(() => {

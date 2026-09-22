@@ -2,10 +2,13 @@
 
 @layer utilities {
   .pb-safe {
-    padding-bottom: env(safe-area-inset-bottom, 16px);
+    padding-bottom: max(12px, env(safe-area-inset-bottom, 12px));
   }
   .pt-safe {
-    padding-top: env(safe-area-inset-top, 16px);
+    padding-top: max(14px, env(safe-area-inset-top, 14px));
+  }
+  .hud-top-safe {
+    padding-top: max(8px, env(safe-area-inset-top, 8px));
   }
 }
 
